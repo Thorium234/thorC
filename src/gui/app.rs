@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex};
 
-use eframe::egui::{self, ColorImage, Sense, TextureHandle, TextureOptions, Vec2};
+use eframe::egui::{
+    self, Align, Align2, Color32, ColorImage, FontId, Frame, Layout, Margin, RichText, Sense,
+    Stroke, TextureHandle, TextureOptions, Vec2,
+};
 
 use crate::core::connection::{AppSnapshot, AppState, ConnectionManager};
 use crate::core::protocol::Message;
@@ -59,6 +62,284 @@ impl ThorApp {
         }
 
         self.last_frame_version = snapshot.frame_version;
+    }
+
+    fn apply_theme(ctx: &egui::Context) {
+        let mut visuals = egui::Visuals::dark();
+        visuals.override_text_color = Some(Color32::from_rgb(232, 234, 237));
+        visuals.panel_fill = Color32::from_rgb(10, 15, 22);
+        visuals.window_fill = Color32::from_rgb(10, 15, 22);
+        visuals.faint_bg_color = Color32::from_rgb(18, 24, 34);
+        visuals.extreme_bg_color = Color32::from_rgb(6, 10, 16);
+        visuals.selection.bg_fill = Color32::from_rgb(58, 110, 165);
+        visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(195, 224, 255));
+        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(18, 24, 34);
+        visuals.widgets.noninteractive.fg_stroke =
+            Stroke::new(1.0, Color32::from_rgb(200, 205, 213));
+        visuals.widgets.noninteractive.rounding = 12.0.into();
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(27, 35, 48);
+        visuals.widgets.inactive.rounding = 10.0.into();
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(35, 47, 65);
+        visuals.widgets.hovered.rounding = 10.0.into();
+        visuals.widgets.active.bg_fill = Color32::from_rgb(51, 85, 129);
+        visuals.widgets.active.rounding = 10.0.into();
+        visuals.widgets.open.bg_fill = Color32::from_rgb(35, 47, 65);
+        ctx.set_visuals(visuals);
+    }
+
+    fn card_frame() -> Frame {
+        Frame::none()
+            .fill(Color32::from_rgb(18, 24, 34))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(38, 50, 67)))
+            .inner_margin(Margin::same(16.0))
+            .rounding(12.0)
+    }
+
+    fn status_tone(snapshot: &AppSnapshot) -> (Color32, &'static str) {
+        if snapshot.connected {
+            (Color32::from_rgb(74, 222, 128), "Live session")
+        } else if snapshot.server_running {
+            (Color32::from_rgb(250, 204, 21), "Waiting for peer")
+        } else {
+            (Color32::from_rgb(248, 113, 113), "Offline")
+        }
+    }
+
+    fn draw_title_bar(&self, ui: &mut egui::Ui, snapshot: &AppSnapshot) {
+        let (tone, label) = Self::status_tone(snapshot);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new("ThorC")
+                        .size(28.0)
+                        .color(Color32::from_rgb(242, 245, 247))
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new("Minimal remote desktop control")
+                        .size(13.0)
+                        .color(Color32::from_rgb(150, 162, 178)),
+                );
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                Frame::none()
+                    .fill(tone.linear_multiply(0.14))
+                    .stroke(Stroke::new(1.0, tone.linear_multiply(0.6)))
+                    .inner_margin(Margin::symmetric(12.0, 8.0))
+                    .rounding(999.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(tone, "●");
+                            ui.label(
+                                RichText::new(label)
+                                    .color(Color32::from_rgb(232, 234, 237))
+                                    .strong(),
+                            );
+                        });
+                    });
+            });
+        });
+    }
+
+    fn draw_info_card(
+        ui: &mut egui::Ui,
+        title: &str,
+        value: &str,
+        accent: Color32,
+        subtitle: &str,
+    ) {
+        Self::card_frame().show(ui, |ui| {
+            ui.label(
+                RichText::new(title)
+                    .size(12.0)
+                    .color(Color32::from_rgb(143, 155, 171)),
+            );
+            ui.add_space(6.0);
+            ui.label(RichText::new(value).size(18.0).color(accent).strong());
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(subtitle)
+                    .size(12.0)
+                    .color(Color32::from_rgb(132, 144, 160)),
+            );
+        });
+    }
+
+    fn draw_control_panel(&mut self, ui: &mut egui::Ui, snapshot: &AppSnapshot) {
+        ui.vertical(|ui| {
+            Self::card_frame().show(ui, |ui| {
+                ui.label(RichText::new("Local device").size(13.0).color(Color32::from_rgb(143, 155, 171)));
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(snapshot.local_id.as_str())
+                        .size(16.0)
+                        .color(Color32::from_rgb(240, 244, 249))
+                        .strong(),
+                );
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new(snapshot.status.as_str())
+                        .size(13.0)
+                        .color(Color32::from_rgb(157, 168, 182)),
+                );
+            });
+
+            ui.add_space(12.0);
+
+            Self::card_frame().show(ui, |ui| {
+                ui.label(RichText::new("Host machine").size(16.0).strong());
+                ui.add_space(12.0);
+                ui.label(RichText::new("Listen address").size(12.0).color(Color32::from_rgb(143, 155, 171)));
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.listen_addr)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("0.0.0.0:9000"),
+                );
+                ui.add_space(10.0);
+                let label = if snapshot.server_running {
+                    "Server Running"
+                } else {
+                    "Start Server"
+                };
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 34.0],
+                        egui::Button::new(RichText::new(label).strong()),
+                    )
+                    .clicked()
+                {
+                    self.manager.start_server(self.listen_addr.clone());
+                }
+            });
+
+            ui.add_space(12.0);
+
+            Self::card_frame().show(ui, |ui| {
+                ui.label(RichText::new("Controller machine").size(16.0).strong());
+                ui.add_space(12.0);
+                ui.label(RichText::new("Target address").size(12.0).color(Color32::from_rgb(143, 155, 171)));
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.connect_addr)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("127.0.0.1:9000"),
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let button_width = ((ui.available_width() - 8.0) / 2.0).max(96.0);
+                    if ui
+                        .add_sized(
+                            [button_width, 34.0],
+                            egui::Button::new(RichText::new("Connect").strong()),
+                        )
+                        .clicked()
+                    {
+                        self.manager.connect(self.connect_addr.clone());
+                    }
+                    if ui
+                        .add_sized(
+                            [button_width, 34.0],
+                            egui::Button::new(RichText::new("Disconnect").strong()),
+                        )
+                        .clicked()
+                    {
+                        self.manager.disconnect();
+                    }
+                });
+            });
+
+            ui.add_space(12.0);
+
+            Self::card_frame().show(ui, |ui| {
+                ui.label(RichText::new("Session notes").size(16.0).strong());
+                ui.add_space(10.0);
+                ui.label(
+                    RichText::new("Start the server on the machine being controlled, then connect from the viewer.")
+                        .size(13.0)
+                        .color(Color32::from_rgb(157, 168, 182)),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Click inside the remote screen before sending mouse or keyboard input.")
+                        .size(13.0)
+                        .color(Color32::from_rgb(157, 168, 182)),
+                );
+            });
+        });
+    }
+
+    fn draw_viewer(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, snapshot: &AppSnapshot) {
+        Self::card_frame().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Remote screen").size(18.0).strong());
+                    ui.label(
+                        RichText::new("Live viewer and input surface")
+                            .size(12.0)
+                            .color(Color32::from_rgb(143, 155, 171)),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let dims = snapshot
+                        .current_frame_size
+                        .map(|(w, h)| format!("{w} x {h}"))
+                        .unwrap_or_else(|| "No frame".to_owned());
+                    ui.label(
+                        RichText::new(dims)
+                            .size(12.0)
+                            .color(Color32::from_rgb(143, 155, 171)),
+                    );
+                });
+            });
+
+            ui.add_space(14.0);
+
+            let available = ui.available_size();
+            let desired = Vec2::new(available.x.max(320.0), available.y.max(280.0));
+
+            Frame::none()
+                .fill(Color32::from_rgb(5, 8, 14))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(35, 47, 65)))
+                .rounding(14.0)
+                .inner_margin(Margin::same(12.0))
+                .show(ui, |ui| {
+                    if let Some(texture) = &self.texture {
+                        let mut display_size = desired;
+                        if let Some((width, height)) = snapshot.current_frame_size {
+                            let image_size = Vec2::new(width as f32, height as f32);
+                            let scale = (desired.x / image_size.x)
+                                .min(desired.y / image_size.y)
+                                .max(0.1);
+                            display_size = image_size * scale;
+                        }
+
+                        let image = egui::Image::new(texture)
+                            .fit_to_exact_size(display_size)
+                            .sense(Sense::click_and_drag());
+                        let response = ui.add(image);
+                        self.forward_remote_input(ctx, &response, snapshot);
+                    } else {
+                        let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
+                        let painter = ui.painter_at(rect);
+                        painter.rect_filled(rect, 14.0, Color32::from_rgb(8, 12, 18));
+                        painter.text(
+                            rect.center_top() + Vec2::new(0.0, 92.0),
+                            Align2::CENTER_CENTER,
+                            "No remote frame yet",
+                            FontId::proportional(24.0),
+                            Color32::from_rgb(224, 228, 232),
+                        );
+                        painter.text(
+                            rect.center_top() + Vec2::new(0.0, 128.0),
+                            Align2::CENTER_CENTER,
+                            "Start a server, connect a peer, then click inside this viewer to control it.",
+                            FontId::proportional(14.0),
+                            Color32::from_rgb(132, 144, 160),
+                        );
+                    }
+                });
+        });
     }
 
     fn map_pointer_to_remote(
@@ -169,75 +450,94 @@ impl eframe::App for ThorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let snapshot = self.snapshot();
         self.refresh_texture(ctx, &snapshot);
+        Self::apply_theme(ctx);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("ThorC v1");
-            ui.label(format!("Your ID: {}", snapshot.local_id));
-            ui.label(format!("Status: {}", snapshot.status));
+            ui.add_space(8.0);
+            self.draw_title_bar(ui, &snapshot);
+            ui.add_space(16.0);
 
-            ui.horizontal(|ui| {
-                ui.label("Listen:");
-                ui.text_edit_singleline(&mut self.listen_addr);
-                if ui.button("Start Server").clicked() {
-                    self.manager.start_server(self.listen_addr.clone());
-                }
-            });
+            ui.columns(3, |columns| {
+                columns[0].set_min_width(260.0);
+                columns[1].set_min_width(180.0);
+                columns[2].set_min_width(180.0);
 
-            ui.horizontal(|ui| {
-                ui.label("Target:");
-                ui.text_edit_singleline(&mut self.connect_addr);
-                if ui.button("Connect").clicked() {
-                    self.manager.connect(self.connect_addr.clone());
-                }
-                if ui.button("Disconnect").clicked() {
-                    self.manager.disconnect();
-                }
-            });
+                self.draw_control_panel(&mut columns[0], &snapshot);
 
-            ui.label(format!(
-                "Connected: {}",
-                if snapshot.connected { "Yes" } else { "No" }
-            ));
-            ui.label(format!(
-                "Peer ID: {}",
-                snapshot.peer_id.as_deref().unwrap_or("N/A")
-            ));
-            ui.label(format!(
-                "Server: {}",
-                if snapshot.server_running {
-                    "Running"
-                } else {
-                    "Stopped"
-                }
-            ));
-
-            ui.separator();
-
-            let available = ui.available_size();
-            let desired = Vec2::new(available.x.max(320.0), available.y.max(240.0));
-
-            if let Some(texture) = &self.texture {
-                let mut display_size = desired;
-                if let Some((width, height)) = snapshot.current_frame_size {
-                    let image_size = Vec2::new(width as f32, height as f32);
-                    let scale = (desired.x / image_size.x)
-                        .min(desired.y / image_size.y)
-                        .max(0.1);
-                    display_size = image_size * scale;
-                }
-
-                let image = egui::Image::new(texture)
-                    .fit_to_exact_size(display_size)
-                    .sense(Sense::click_and_drag());
-                let response = ui.add(image);
-                self.forward_remote_input(ctx, &response, &snapshot);
-            } else {
-                ui.allocate_ui(desired, |ui| {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("Remote screen will appear here");
-                    });
+                columns[1].vertical(|ui| {
+                    let (accent, _) = Self::status_tone(&snapshot);
+                    Self::draw_info_card(
+                        ui,
+                        "Connection",
+                        if snapshot.connected {
+                            "Connected"
+                        } else {
+                            "Idle"
+                        },
+                        accent,
+                        snapshot.peer_id.as_deref().unwrap_or("No peer connected"),
+                    );
+                    ui.add_space(12.0);
+                    Self::draw_info_card(
+                        ui,
+                        "Server",
+                        if snapshot.server_running {
+                            "Listening"
+                        } else {
+                            "Stopped"
+                        },
+                        Color32::from_rgb(125, 211, 252),
+                        snapshot.listen_addr.as_str(),
+                    );
+                    ui.add_space(12.0);
+                    let stream_size = snapshot
+                        .current_frame_size
+                        .map(|(w, h)| format!("{w} x {h}"))
+                        .unwrap_or_else(|| "No stream yet".to_owned());
+                    Self::draw_info_card(
+                        ui,
+                        "Display",
+                        stream_size.as_str(),
+                        Color32::from_rgb(196, 181, 253),
+                        "Incoming frame dimensions",
+                    );
                 });
-            }
+
+                columns[2].vertical(|ui| {
+                    let peer_value = snapshot.peer_id.as_deref().unwrap_or("Unavailable");
+                    Self::draw_info_card(
+                        ui,
+                        "Peer",
+                        peer_value,
+                        Color32::from_rgb(251, 191, 36),
+                        "Current remote controller or host",
+                    );
+                    ui.add_space(12.0);
+                    Self::draw_info_card(
+                        ui,
+                        "Target",
+                        snapshot.target_addr.as_str(),
+                        Color32::from_rgb(248, 113, 113),
+                        "Address used by the viewer",
+                    );
+                    ui.add_space(12.0);
+                    let frame_count = if snapshot.frame_version == 0 {
+                        "No frames".to_owned()
+                    } else {
+                        format!("{} updates", snapshot.frame_version)
+                    };
+                    Self::draw_info_card(
+                        ui,
+                        "Frame flow",
+                        frame_count.as_str(),
+                        Color32::from_rgb(74, 222, 128),
+                        "Decoded frames received in this session",
+                    );
+                });
+            });
+
+            ui.add_space(16.0);
+            self.draw_viewer(ui, ctx, &snapshot);
         });
 
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
