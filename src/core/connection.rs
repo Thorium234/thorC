@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::core::protocol::Message;
+use crate::core::settings::{load_settings, save_settings, AppSettings};
 use crate::network::{client, server};
 
 pub struct AppState {
@@ -37,6 +38,7 @@ pub struct AppSnapshot {
 
 impl AppState {
     pub fn new() -> Self {
+        let settings = load_settings();
         Self {
             connected: false,
             peer_id: None,
@@ -44,8 +46,8 @@ impl AppState {
             current_frame_size: None,
             frame_version: 0,
             local_id: Uuid::new_v4().to_string(),
-            listen_addr: "0.0.0.0:9000".to_owned(),
-            target_addr: "127.0.0.1:9000".to_owned(),
+            listen_addr: settings.listen_addr,
+            target_addr: settings.target_addr,
             status: "Idle".to_owned(),
             server_running: false,
             outbound: None,
@@ -66,6 +68,13 @@ impl AppState {
             server_running: self.server_running,
         }
     }
+
+    pub fn settings(&self) -> AppSettings {
+        AppSettings {
+            listen_addr: self.listen_addr.clone(),
+            target_addr: self.target_addr.clone(),
+        }
+    }
 }
 
 pub struct ConnectionManager {
@@ -82,6 +91,7 @@ impl ConnectionManager {
         {
             if let Ok(mut state) = self.state.lock() {
                 state.listen_addr = listen_addr.clone();
+                let _ = save_settings(&state.settings());
                 if state.server_running {
                     state.status = format!("Server already listening on {}", state.listen_addr);
                     return;
@@ -106,6 +116,7 @@ impl ConnectionManager {
         {
             if let Ok(mut state) = self.state.lock() {
                 state.target_addr = target_addr.clone();
+                let _ = save_settings(&state.settings());
                 state.status = format!("Connecting to {target_addr}");
             }
         }
@@ -148,6 +159,14 @@ impl ConnectionManager {
             state.peer_id = None;
             state.outbound = None;
             state.status = "Disconnected".to_owned();
+        }
+    }
+
+    pub fn update_addresses(&self, listen_addr: String, target_addr: String) {
+        if let Ok(mut state) = self.state.lock() {
+            state.listen_addr = listen_addr;
+            state.target_addr = target_addr;
+            let _ = save_settings(&state.settings());
         }
     }
 }

@@ -63,6 +63,7 @@ ThorC is GUI-driven. In the window:
 - Use `Listen` plus `Start Server` on the machine being controlled.
 - Use `Target` plus `Connect` on the controller machine.
 - Use `Disconnect` to close the active session.
+- ThorC remembers the last listen and target addresses between launches.
 
 ## Local Test Flow
 

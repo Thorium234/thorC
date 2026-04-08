@@ -3040,6 +3040,7 @@ dependencies = [
  "enigo",
  "scrap",
  "serde",
+ "serde_json",
  "tokio",
  "uuid",
 ]
