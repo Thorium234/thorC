@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct AppSettings {
     pub listen_addr: String,
     pub target_addr: String,
+    #[serde(default)]
+    pub recent_targets: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -16,6 +18,7 @@ impl Default for AppSettings {
         Self {
             listen_addr: "0.0.0.0:9000".to_owned(),
             target_addr: "127.0.0.1:9000".to_owned(),
+            recent_targets: vec!["127.0.0.1:9000".to_owned()],
         }
     }
 }

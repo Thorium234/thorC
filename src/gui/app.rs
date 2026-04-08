@@ -316,6 +316,24 @@ impl ThorApp {
                         self.set_notice("Copied target address");
                     }
                 });
+                if !snapshot.recent_targets.is_empty() {
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new("Recent targets")
+                            .size(12.0)
+                            .color(Color32::from_rgb(143, 155, 171)),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for target in &snapshot.recent_targets {
+                            if ui.button(target).clicked() {
+                                self.connect_addr = target.clone();
+                                self.persist_addresses();
+                                self.set_notice(format!("Loaded recent target {}", target));
+                            }
+                        }
+                    });
+                }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let button_width = ((ui.available_width() - 8.0) / 2.0).max(96.0);
