@@ -11,12 +11,18 @@ use eframe::NativeOptions;
 use gui::app::ThorApp;
 use tokio::runtime::Builder;
 
-fn main() -> eframe::Result<()> {
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("ThorC failed to start: {err}");
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = Arc::new(
         Builder::new_multi_thread()
             .enable_all()
             .build()
-            .map_err(|err| eframe::Error::AppCreation(Box::new(err)))?,
+            .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })?,
     );
 
     let state = Arc::new(Mutex::new(AppState::new()));
@@ -31,4 +37,5 @@ fn main() -> eframe::Result<()> {
         native_options,
         Box::new(move |_cc| Box::new(ThorApp::new(manager.clone(), state.clone()))),
     )
+    .map_err(|err| -> Box<dyn std::error::Error> { Box::new(err) })
 }
