@@ -128,6 +128,20 @@ impl ThorApp {
         }
     }
 
+    fn status_error(snapshot: &AppSnapshot) -> Option<&str> {
+        let status = snapshot.status.as_str();
+        let lowered = status.to_ascii_lowercase();
+        if lowered.contains("failed")
+            || lowered.contains("error")
+            || lowered.contains("lost")
+            || lowered.contains("dropped")
+        {
+            Some(status)
+        } else {
+            None
+        }
+    }
+
     fn draw_title_bar(&self, ui: &mut egui::Ui, snapshot: &AppSnapshot) {
         let (tone, label) = Self::status_tone(snapshot);
         ui.horizontal(|ui| {
@@ -180,6 +194,44 @@ impl ThorApp {
                             .size(13.0)
                             .color(Color32::from_rgb(229, 233, 238)),
                     );
+                });
+            });
+    }
+
+    fn draw_error_banner(&mut self, ui: &mut egui::Ui, snapshot: &AppSnapshot) {
+        let Some(message) = Self::status_error(snapshot) else {
+            return;
+        };
+
+        Frame::none()
+            .fill(Color32::from_rgb(58, 22, 24))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(190, 72, 76)))
+            .inner_margin(Margin::symmetric(14.0, 12.0))
+            .rounding(12.0)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Connection issue")
+                            .strong()
+                            .color(Color32::from_rgb(255, 214, 214)),
+                    );
+                    ui.label(
+                        RichText::new(message)
+                            .size(13.0)
+                            .color(Color32::from_rgb(245, 208, 208)),
+                    );
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Retry target").clicked() {
+                        self.manager.connect(self.connect_addr.clone());
+                        self.set_notice(format!("Retrying {}", self.connect_addr));
+                    }
+                    if ui.button("Use localhost").clicked() {
+                        self.connect_addr = "127.0.0.1:9000".to_owned();
+                        self.persist_addresses();
+                        self.set_notice("Loaded localhost target");
+                    }
                 });
             });
     }
@@ -336,6 +388,20 @@ impl ThorApp {
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
+                    if ui.button("Retry last target").clicked() {
+                        self.manager.connect(self.connect_addr.clone());
+                        self.set_notice(format!("Retrying {}", self.connect_addr));
+                    }
+                    if let Some(first) = snapshot.recent_targets.first() {
+                        if first != &self.connect_addr && ui.button("Load most recent").clicked() {
+                            self.connect_addr = first.clone();
+                            self.persist_addresses();
+                            self.set_notice(format!("Loaded recent target {}", first));
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
                     let button_width = ((ui.available_width() - 8.0) / 2.0).max(96.0);
                     let connect = egui::Button::new(RichText::new("Connect").strong())
                         .min_size(Vec2::new(button_width, 34.0));
@@ -430,7 +496,9 @@ impl ThorApp {
     }
 
     fn draw_viewer_hint(&self, ui: &mut egui::Ui, snapshot: &AppSnapshot) {
-        let hint = if snapshot.connected {
+        let hint = if snapshot.connected && snapshot.current_frame.is_none() {
+            "Connected. Waiting for the first screen frame from the remote machine."
+        } else if snapshot.connected {
             "Connected. Click inside the frame to send input."
         } else if snapshot.server_running {
             "Server is listening. Connect from another ThorC window or machine."
@@ -642,6 +710,10 @@ impl eframe::App for ThorApp {
             self.draw_title_bar(ui, &snapshot);
             ui.add_space(12.0);
             self.draw_notice_bar(ui, &snapshot);
+            if Self::status_error(&snapshot).is_some() {
+                ui.add_space(10.0);
+                self.draw_error_banner(ui, &snapshot);
+            }
             ui.add_space(16.0);
 
             ui.columns(3, |columns| {

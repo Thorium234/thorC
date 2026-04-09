@@ -29,9 +29,7 @@ pub async fn run_server(state: Arc<Mutex<AppState>>, listen_addr: String) -> io:
         tokio::spawn(async move {
             if let Err(err) = handle_client(state_for_conn.clone(), stream).await {
                 if let Ok(mut state) = state_for_conn.lock() {
-                    state.connected = false;
-                    state.peer_id = None;
-                    state.outbound = None;
+                    state.clear_connection_state();
                     state.status = format!("Client session ended: {err}");
                 }
             }
@@ -45,13 +43,33 @@ async fn handle_client(
 ) -> io::Result<()> {
     let (mut reader, mut writer) = stream.into_split();
     let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Message>();
+    let reject_busy = {
+        let state = state
+            .lock()
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "state lock poisoned"))?;
+        state.outbound.is_some() || state.connected
+    };
 
-    {
+    if reject_busy {
+        write_message(
+            &mut writer,
+            &Message::ConnectReject {
+                reason: "another remote-control session is already active".to_owned(),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let session_nonce = {
         let mut state = state
             .lock()
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "state lock poisoned"))?;
+        let session_nonce = state.begin_session();
+        state.clear_connection_state();
         state.outbound = Some(outbound_tx.clone());
-    }
+        session_nonce
+    };
 
     tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
@@ -70,9 +88,11 @@ async fn handle_client(
         match read_message(&mut reader).await {
             Ok(Message::ConnectRequest { id }) => {
                 if let Ok(mut state) = state.lock() {
-                    state.connected = true;
-                    state.peer_id = Some(id.clone());
-                    state.status = format!("Connected to controller {id}");
+                    if state.is_current_session(session_nonce) {
+                        state.connected = true;
+                        state.peer_id = Some(id.clone());
+                        state.status = format!("Connected to controller {id}");
+                    }
                 }
 
                 outbound_tx.send(Message::ConnectAccept).map_err(|_| {
@@ -81,41 +101,60 @@ async fn handle_client(
 
                 if !frame_task_started {
                     frame_task_started = true;
-                    spawn_frame_sender(outbound_tx.clone());
+                    spawn_frame_sender(state.clone(), outbound_tx.clone(), session_nonce);
                 }
             }
             Ok(Message::MouseEvent { x, y, button }) => {
                 if let Err(err) = execute_mouse_event(x, y, &button) {
                     if let Ok(mut state) = state.lock() {
-                        state.status = format!("Mouse input failed: {err}");
+                        if state.is_current_session(session_nonce) {
+                            state.status = format!("Mouse input failed: {err}");
+                        }
                     }
                 }
             }
             Ok(Message::KeyboardEvent { key }) => {
                 if let Err(err) = execute_keyboard_event(&key) {
                     if let Ok(mut state) = state.lock() {
-                        state.status = format!("Keyboard input failed: {err}");
+                        if state.is_current_session(session_nonce) {
+                            state.status = format!("Keyboard input failed: {err}");
+                        }
                     }
                 }
             }
             Ok(Message::Disconnect) => {
                 if let Ok(mut state) = state.lock() {
-                    state.connected = false;
-                    state.peer_id = None;
-                    state.outbound = None;
-                    state.status = "Controller disconnected".to_owned();
+                    if state.is_current_session(session_nonce) {
+                        state.begin_session();
+                        state.clear_connection_state();
+                        state.status = "Controller disconnected".to_owned();
+                    }
                 }
                 return Ok(());
             }
-            Ok(Message::ConnectAccept) | Ok(Message::Frame { .. }) => {}
+            Ok(Message::ConnectAccept)
+            | Ok(Message::ConnectReject { .. })
+            | Ok(Message::Frame { .. }) => {}
             Err(err) => return Err(err),
         }
     }
 }
 
-fn spawn_frame_sender(outbound_tx: mpsc::UnboundedSender<Message>) {
+fn spawn_frame_sender(
+    state: Arc<Mutex<AppState>>,
+    outbound_tx: mpsc::UnboundedSender<Message>,
+    session_nonce: u64,
+) {
     tokio::spawn(async move {
         loop {
+            let is_current = state
+                .lock()
+                .map(|state| state.is_current_session(session_nonce))
+                .unwrap_or(false);
+            if !is_current {
+                break;
+            }
+
             let capture_result = tokio::task::spawn_blocking(capture_primary_frame).await;
             let frame = match capture_result {
                 Ok(Ok(frame)) => frame,

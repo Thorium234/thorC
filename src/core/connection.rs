@@ -21,6 +21,7 @@ pub struct AppState {
     pub server_running: bool,
     pub recent_targets: Vec<String>,
     pub outbound: Option<mpsc::UnboundedSender<Message>>,
+    pub session_nonce: u64,
 }
 
 #[derive(Clone)]
@@ -54,6 +55,7 @@ impl AppState {
             server_running: false,
             recent_targets: settings.recent_targets,
             outbound: None,
+            session_nonce: 0,
         }
     }
 
@@ -90,6 +92,24 @@ impl AppState {
         self.recent_targets.retain(|item| item != trimmed);
         self.recent_targets.insert(0, trimmed.to_owned());
         self.recent_targets.truncate(5);
+    }
+
+    pub fn begin_session(&mut self) -> u64 {
+        self.session_nonce = self.session_nonce.wrapping_add(1);
+        self.session_nonce
+    }
+
+    pub fn is_current_session(&self, session_nonce: u64) -> bool {
+        self.session_nonce == session_nonce
+    }
+
+    pub fn clear_connection_state(&mut self) {
+        self.connected = false;
+        self.peer_id = None;
+        self.current_frame = None;
+        self.current_frame_size = None;
+        self.frame_version = 0;
+        self.outbound = None;
     }
 }
 
@@ -129,23 +149,28 @@ impl ConnectionManager {
     }
 
     pub fn connect(&self, target_addr: String) {
-        {
-            if let Ok(mut state) = self.state.lock() {
-                state.target_addr = target_addr.clone();
-                state.remember_target(&target_addr);
-                let _ = save_settings(&state.settings());
-                state.status = format!("Connecting to {target_addr}");
-            }
-        }
+        let session_nonce = if let Ok(mut state) = self.state.lock() {
+            state.target_addr = target_addr.clone();
+            state.remember_target(&target_addr);
+            let _ = save_settings(&state.settings());
+            let session_nonce = state.begin_session();
+            state.clear_connection_state();
+            state.status = format!("Connecting to {target_addr}");
+            session_nonce
+        } else {
+            0
+        };
 
         let state = self.state.clone();
         self.runtime.spawn(async move {
-            if let Err(err) = client::connect_to_peer(state.clone(), target_addr.clone()).await {
+            if let Err(err) =
+                client::connect_to_peer(state.clone(), target_addr.clone(), session_nonce).await
+            {
                 if let Ok(mut state) = state.lock() {
-                    state.connected = false;
-                    state.outbound = None;
-                    state.peer_id = None;
-                    state.status = format!("Connection to {target_addr} failed: {err}");
+                    if state.is_current_session(session_nonce) {
+                        state.clear_connection_state();
+                        state.status = format!("Connection to {target_addr} failed: {err}");
+                    }
                 }
             }
         });
@@ -161,8 +186,7 @@ impl ConnectionManager {
         if let Some(sender) = outbound {
             if sender.send(message).is_err() {
                 if let Ok(mut state) = self.state.lock() {
-                    state.connected = false;
-                    state.outbound = None;
+                    state.clear_connection_state();
                     state.status = "Connection dropped while sending".to_owned();
                 }
             }
@@ -172,9 +196,8 @@ impl ConnectionManager {
     pub fn disconnect(&self) {
         self.send_message(Message::Disconnect);
         if let Ok(mut state) = self.state.lock() {
-            state.connected = false;
-            state.peer_id = None;
-            state.outbound = None;
+            state.begin_session();
+            state.clear_connection_state();
             state.status = "Disconnected".to_owned();
         }
     }

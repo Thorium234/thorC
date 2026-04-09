@@ -9,6 +9,7 @@ pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 pub enum Message {
     ConnectRequest { id: String },
     ConnectAccept,
+    ConnectReject { reason: String },
     Frame { data: Vec<u8> },
     MouseEvent { x: i32, y: i32, button: String },
     KeyboardEvent { key: String },
