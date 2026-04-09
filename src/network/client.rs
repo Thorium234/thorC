@@ -150,6 +150,7 @@ pub async fn connect_to_peer(
             }
             Ok(Message::ConnectRequest { .. })
             | Ok(Message::MouseEvent { .. })
+            | Ok(Message::MouseScroll { .. })
             | Ok(Message::KeyboardEvent { .. }) => {}
             Err(err) => {
                 if let Ok(mut state) = state.lock() {

@@ -443,6 +443,19 @@ impl ThorApp {
         Some((x, y))
     }
 
+    fn normalize_scroll_delta(delta: f32) -> i32 {
+        if delta == 0.0 {
+            return 0;
+        }
+
+        let steps = (delta / 40.0).round() as i32;
+        if steps == 0 {
+            delta.signum() as i32
+        } else {
+            steps
+        }
+    }
+
     fn forward_remote_input(
         &mut self,
         ctx: &egui::Context,
@@ -484,6 +497,18 @@ impl ThorApp {
                         x,
                         y,
                         button: "right".to_owned(),
+                    });
+                }
+
+                let scroll_delta = ctx.input(|input| input.raw_scroll_delta);
+                let delta_x = Self::normalize_scroll_delta(scroll_delta.x);
+                let delta_y = Self::normalize_scroll_delta(scroll_delta.y);
+                if response.hovered() && (delta_x != 0 || delta_y != 0) {
+                    self.manager.send_message(Message::MouseScroll {
+                        x,
+                        y,
+                        delta_x,
+                        delta_y,
                     });
                 }
             }
@@ -546,20 +571,24 @@ impl eframe::App for ThorApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(8.0);
-            self.draw_title_bar(ui, &snapshot);
-            ui.add_space(12.0);
-            self.draw_notice_bar(ui, &snapshot);
-            if Self::status_error(&snapshot).is_some() {
-                ui.add_space(10.0);
-                self.draw_error_banner(ui, &snapshot);
-            }
-            ui.add_space(16.0);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(8.0);
+                    self.draw_title_bar(ui, &snapshot);
+                    ui.add_space(12.0);
+                    self.draw_notice_bar(ui, &snapshot);
+                    if Self::status_error(&snapshot).is_some() {
+                        ui.add_space(10.0);
+                        self.draw_error_banner(ui, &snapshot);
+                    }
+                    ui.add_space(16.0);
 
-            self.draw_control_panel(ui, &snapshot);
+                    self.draw_control_panel(ui, &snapshot);
 
-            ui.add_space(16.0);
-            self.draw_viewer(ui, ctx, &snapshot);
+                    ui.add_space(16.0);
+                    self.draw_viewer(ui, ctx, &snapshot);
+                });
         });
 
         ctx.request_repaint_after(Duration::from_millis(16));

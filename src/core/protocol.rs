@@ -9,14 +9,36 @@ pub const FRAME_CHUNK_SIZE: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
-    ConnectRequest { id: String },
+    ConnectRequest {
+        id: String,
+    },
     ConnectAccept,
-    ConnectReject { reason: String },
-    Frame { data: Vec<u8> },
-    FrameStart { total_len: u32 },
-    FrameChunk { data: Vec<u8> },
-    MouseEvent { x: i32, y: i32, button: String },
-    KeyboardEvent { key: String },
+    ConnectReject {
+        reason: String,
+    },
+    Frame {
+        data: Vec<u8>,
+    },
+    FrameStart {
+        total_len: u32,
+    },
+    FrameChunk {
+        data: Vec<u8>,
+    },
+    MouseEvent {
+        x: i32,
+        y: i32,
+        button: String,
+    },
+    MouseScroll {
+        x: i32,
+        y: i32,
+        delta_x: i32,
+        delta_y: i32,
+    },
+    KeyboardEvent {
+        key: String,
+    },
     Disconnect,
 }
 

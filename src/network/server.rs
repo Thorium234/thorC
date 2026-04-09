@@ -10,7 +10,7 @@ use crate::core::protocol::{
     read_message, write_message, Message, FRAME_CHUNK_SIZE, MAX_FRAME_SIZE,
 };
 use crate::input::keyboard::execute_keyboard_event;
-use crate::input::mouse::execute_mouse_event;
+use crate::input::mouse::{execute_mouse_event, execute_mouse_scroll};
 use crate::screen::capture::PrimaryCapturer;
 use crate::screen::encode::encode_frame;
 
@@ -110,6 +110,20 @@ async fn handle_client(
                     if let Ok(mut state) = state.lock() {
                         if state.is_current_session(session_nonce) {
                             state.status = format!("Mouse input failed: {err}");
+                        }
+                    }
+                }
+            }
+            Ok(Message::MouseScroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            }) => {
+                if let Err(err) = execute_mouse_scroll(x, y, delta_x, delta_y) {
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.status = format!("Mouse scroll failed: {err}");
                         }
                     }
                 }
