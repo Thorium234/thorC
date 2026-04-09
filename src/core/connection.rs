@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::core::protocol::Message;
+use crate::core::session::{SessionConfig, SessionId, SessionInfo, SessionState};
 use crate::core::settings::{load_settings, save_settings, AppSettings};
 use crate::network::{client, server};
 
@@ -17,10 +18,19 @@ pub struct AppState {
     pub local_id: String,
     pub listen_addr: String,
     pub target_addr: String,
+    pub relay_addr: Option<String>,
     pub status: String,
     pub server_running: bool,
     pub outbound: Option<mpsc::UnboundedSender<Message>>,
     pub session_nonce: u64,
+    /// v2: Active session tracking.
+    pub session: Option<SessionInfo>,
+    /// v2: Session configuration.
+    pub session_config: SessionConfig,
+    /// v2: Enable delta frame encoding.
+    pub delta_encoding: bool,
+    /// v2: Target FPS for screen streaming.
+    pub target_fps: u32,
 }
 
 #[derive(Clone)]
@@ -34,6 +44,11 @@ pub struct AppSnapshot {
     pub target_addr: String,
     pub status: String,
     pub server_running: bool,
+    /// v2: Session state for display.
+    pub session_state: Option<String>,
+    /// v2: Bytes sent/received stats.
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
 }
 
 impl AppState {
@@ -48,10 +63,15 @@ impl AppState {
             local_id: Uuid::new_v4().to_string(),
             listen_addr: settings.listen_addr,
             target_addr: settings.target_addr,
+            relay_addr: settings.relay_addr,
             status: "Idle".to_owned(),
             server_running: false,
             outbound: None,
             session_nonce: 0,
+            session: None,
+            session_config: SessionConfig::default(),
+            delta_encoding: true,
+            target_fps: 15,
         }
     }
 
@@ -66,6 +86,9 @@ impl AppState {
             target_addr: self.target_addr.clone(),
             status: self.status.clone(),
             server_running: self.server_running,
+            session_state: self.session.as_ref().map(|s| format!("{:?}", s.state)),
+            bytes_sent: self.session.as_ref().map(|s| s.bytes_sent).unwrap_or(0),
+            bytes_received: self.session.as_ref().map(|s| s.bytes_received).unwrap_or(0),
         }
     }
 
@@ -73,11 +96,14 @@ impl AppState {
         AppSettings {
             listen_addr: self.listen_addr.clone(),
             target_addr: self.target_addr.clone(),
+            relay_addr: self.relay_addr.clone(),
         }
     }
 
     pub fn begin_session(&mut self) -> u64 {
         self.session_nonce = self.session_nonce.wrapping_add(1);
+        let session_id = SessionId::new();
+        self.session = Some(SessionInfo::new(session_id));
         self.session_nonce
     }
 
@@ -92,6 +118,58 @@ impl AppState {
         self.current_frame_size = None;
         self.frame_version = 0;
         self.outbound = None;
+        if let Some(ref mut session) = self.session {
+            session.disconnect();
+        }
+    }
+
+    /// v2: Activate the session after successful connection.
+    pub fn activate_session(&mut self, peer_id: String) {
+        self.connected = true;
+        self.peer_id = Some(peer_id.clone());
+        if let Some(ref mut session) = self.session {
+            session.activate(peer_id);
+        }
+    }
+
+    /// v2: Record bytes sent for session tracking.
+    pub fn record_bytes_sent(&mut self, bytes: usize) {
+        if let Some(ref mut session) = self.session {
+            session.record_send(bytes);
+        }
+    }
+
+    /// v2: Record bytes received for session tracking.
+    pub fn record_bytes_received(&mut self, bytes: usize) {
+        if let Some(ref mut session) = self.session {
+            session.record_recv(bytes);
+        }
+    }
+
+    /// v2: Check if the session is stale and should be reconnected.
+    pub fn is_session_stale(&self) -> bool {
+        self.session
+            .as_ref()
+            .map(|s| s.is_stale(self.session_config.stale_timeout))
+            .unwrap_or(false)
+    }
+
+    /// v2: Attempt to reconnect if within retry limits.
+    pub fn should_reconnect(&self) -> bool {
+        self.session
+            .as_ref()
+            .map(|s| {
+                s.reconnect_attempts < self.session_config.max_reconnect_attempts
+                    && s.state != SessionState::Active
+            })
+            .unwrap_or(false)
+    }
+
+    /// v2: Record that a frame was sent for session stats.
+    pub fn record_frame(&mut self) {
+        if let Some(ref mut session) = self.session {
+            session.record_frame();
+        }
     }
 }
 

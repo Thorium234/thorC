@@ -12,6 +12,7 @@ use crate::core::protocol::{
 use crate::input::keyboard::execute_keyboard_event;
 use crate::input::mouse::{execute_mouse_event, execute_mouse_scroll};
 use crate::screen::capture::PrimaryCapturer;
+use crate::screen::delta::DeltaEncoder;
 use crate::screen::encode::encode_frame;
 
 pub async fn run_server(state: Arc<Mutex<AppState>>, listen_addr: String) -> io::Result<()> {
@@ -87,18 +88,31 @@ async fn handle_client(
 
     loop {
         match read_message(&mut reader).await {
-            Ok(Message::ConnectRequest { id }) => {
+            Ok(Message::ConnectRequest { id, session_id }) => {
+                // v2: Generate a session ID if the client didn't provide one
+                let assigned_session_id = session_id.unwrap_or_else(|| {
+                    let state = state.lock().ok();
+                    state
+                        .as_ref()
+                        .and_then(|s| s.session.as_ref())
+                        .map(|s| s.id.as_str().to_owned())
+                        .unwrap_or_else(|| "unknown".to_owned())
+                });
+
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
-                        state.connected = true;
-                        state.peer_id = Some(id.clone());
+                        state.activate_session(id.clone());
                         state.status = format!("Connected to controller {id}");
                     }
                 }
 
-                outbound_tx.send(Message::ConnectAccept).map_err(|_| {
-                    io::Error::new(io::ErrorKind::BrokenPipe, "failed to send accept")
-                })?;
+                outbound_tx
+                    .send(Message::ConnectAccept {
+                        session_id: assigned_session_id,
+                    })
+                    .map_err(|_| {
+                        io::Error::new(io::ErrorKind::BrokenPipe, "failed to send accept")
+                    })?;
 
                 if !frame_task_started {
                     frame_task_started = true;
@@ -137,6 +151,21 @@ async fn handle_client(
                     }
                 }
             }
+            Ok(Message::Heartbeat) => {
+                // v2: Respond to heartbeat
+                if let Ok(state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        let _ = outbound_tx.send(Message::Heartbeat);
+                    }
+                }
+            }
+            Ok(Message::ReconnectRequest) => {
+                // v2: Client is asking for a fresh frame
+                if !frame_task_started {
+                    frame_task_started = true;
+                    spawn_frame_sender(state.clone(), outbound_tx.clone(), session_nonce);
+                }
+            }
             Ok(Message::Disconnect) => {
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
@@ -147,11 +176,12 @@ async fn handle_client(
                 }
                 return Ok(());
             }
-            Ok(Message::ConnectAccept)
+            Ok(Message::ConnectAccept { .. })
             | Ok(Message::ConnectReject { .. })
             | Ok(Message::FrameStart { .. })
             | Ok(Message::FrameChunk { .. })
-            | Ok(Message::Frame { .. }) => {}
+            | Ok(Message::Frame { .. })
+            | Ok(Message::DeltaFrame { .. }) => {}
             Err(err) => return Err(err),
         }
     }
@@ -175,6 +205,20 @@ fn spawn_frame_sender(
             }
         };
 
+        // v2: Initialize delta encoder
+        let mut delta_encoder = DeltaEncoder::new(Default::default());
+        let use_delta = state
+            .lock()
+            .map(|s| s.delta_encoding)
+            .unwrap_or(true);
+
+        // v2: Calculate frame interval from target FPS
+        let target_fps = state
+            .lock()
+            .map(|s| s.target_fps.max(1).min(60))
+            .unwrap_or(15);
+        let frame_interval = Duration::from_millis(1000 / target_fps as u64);
+
         loop {
             let is_current = state
                 .lock()
@@ -197,6 +241,58 @@ fn spawn_frame_sender(
                 }
             };
 
+            // v2: Try delta encoding if enabled
+            if use_delta {
+                if let Some(regions) =
+                    delta_encoder.compute_delta(&frame.data, frame.width, frame.height)
+                {
+                    // Delta detected: send regions
+                    if regions.is_empty() {
+                        // No changes, skip this frame to save bandwidth
+                        std::thread::sleep(frame_interval);
+                        continue;
+                    }
+
+                    let delta_msg = Message::DeltaFrame {
+                        width: frame.width as u32,
+                        height: frame.height as u32,
+                        regions: regions
+                            .into_iter()
+                            .map(|r| crate::core::protocol::DeltaRegion {
+                                x: r.x,
+                                y: r.y,
+                                width: r.width,
+                                height: r.height,
+                                data: r.data,
+                            })
+                            .collect(),
+                    };
+
+                    if outbound_tx.send(delta_msg).is_err() {
+                        if let Ok(mut state) = state.lock() {
+                            if state.is_current_session(session_nonce) {
+                                state.status =
+                                    "Screen stream stopped: client channel closed".to_owned();
+                                state.clear_connection_state();
+                            }
+                        }
+                        break;
+                    }
+
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.record_bytes_sent(
+                                frame.width * frame.height * 4, // approximate
+                            );
+                        }
+                    }
+
+                    std::thread::sleep(frame_interval);
+                    continue;
+                }
+            }
+
+            // Fallback: full frame
             let encoded = encode_frame(frame.width, frame.height, &frame.data);
             if encoded.len() > MAX_FRAME_SIZE {
                 if let Ok(mut state) = state.lock() {
@@ -210,8 +306,19 @@ fn spawn_frame_sender(
             }
 
             let send_result = if encoded.len() <= FRAME_CHUNK_SIZE {
-                outbound_tx.send(Message::Frame { data: encoded })
+                let data_len = encoded.len();
+                if outbound_tx.send(Message::Frame { data: encoded }).is_err() {
+                    break;
+                }
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.record_bytes_sent(data_len);
+                        state.record_frame();
+                    }
+                }
+                true
             } else {
+                let data_len = encoded.len();
                 let start_result = outbound_tx.send(Message::FrameStart {
                     total_len: encoded.len() as u32,
                 });
@@ -234,13 +341,19 @@ fn spawn_frame_sender(
                 }
 
                 if failed {
-                    Err(mpsc::error::SendError(Message::Disconnect))
+                    false
                 } else {
-                    Ok(())
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.record_bytes_sent(data_len);
+                            state.record_frame();
+                        }
+                    }
+                    true
                 }
             };
 
-            if send_result.is_err() {
+            if !send_result {
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
                         state.status = "Screen stream stopped: client channel closed".to_owned();
@@ -250,7 +363,7 @@ fn spawn_frame_sender(
                 break;
             }
 
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(frame_interval);
         }
     });
 }
