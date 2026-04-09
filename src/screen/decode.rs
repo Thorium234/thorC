@@ -17,8 +17,12 @@ pub fn decode_frame(data: &[u8]) -> io::Result<DecodedFrame> {
     let width = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
     let height = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
     let pixels = &data[8..];
+    let expected_len = width
+        .checked_mul(height)
+        .and_then(|count| count.checked_mul(4))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "frame dimensions overflow"))?;
 
-    if pixels.len() != width * height * 4 {
+    if pixels.len() != expected_len {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "frame size does not match declared dimensions",

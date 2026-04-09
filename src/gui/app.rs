@@ -221,70 +221,30 @@ impl ThorApp {
                             .color(Color32::from_rgb(245, 208, 208)),
                     );
                 });
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Retry target").clicked() {
-                        self.manager.connect(self.connect_addr.clone());
-                        self.set_notice(format!("Retrying {}", self.connect_addr));
-                    }
-                    if ui.button("Use localhost").clicked() {
-                        self.connect_addr = "127.0.0.1:9000".to_owned();
-                        self.persist_addresses();
-                        self.set_notice("Loaded localhost target");
-                    }
-                });
             });
-    }
-
-    fn draw_info_card(
-        ui: &mut egui::Ui,
-        title: &str,
-        value: &str,
-        accent: Color32,
-        subtitle: &str,
-    ) {
-        Self::card_frame().show(ui, |ui| {
-            ui.label(
-                RichText::new(title)
-                    .size(12.0)
-                    .color(Color32::from_rgb(143, 155, 171)),
-            );
-            ui.add_space(6.0);
-            ui.label(RichText::new(value).size(18.0).color(accent).strong());
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(subtitle)
-                    .size(12.0)
-                    .color(Color32::from_rgb(132, 144, 160)),
-            );
-        });
     }
 
     fn draw_control_panel(&mut self, ui: &mut egui::Ui, snapshot: &AppSnapshot) {
         ui.vertical(|ui| {
             Self::card_frame().show(ui, |ui| {
                 ui.label(
-                    RichText::new("Local device")
+                    RichText::new("Session")
                         .size(13.0)
                         .color(Color32::from_rgb(143, 155, 171)),
                 );
                 ui.add_space(8.0);
                 ui.label(
-                    RichText::new(snapshot.local_id.as_str())
-                        .size(16.0)
-                        .color(Color32::from_rgb(240, 244, 249))
-                        .strong(),
-                );
-                ui.add_space(10.0);
-                ui.label(
                     RichText::new(snapshot.status.as_str())
-                        .size(13.0)
+                        .size(14.0)
                         .color(Color32::from_rgb(157, 168, 182)),
                 );
-                ui.add_space(10.0);
-                if ui.button("Copy ID").clicked() {
-                    ui.ctx().copy_text(snapshot.local_id.clone());
-                    self.set_notice("Copied local device ID");
+                if let Some(peer_id) = snapshot.peer_id.as_deref() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!("Peer: {peer_id}"))
+                            .size(13.0)
+                            .color(Color32::from_rgb(210, 215, 222)),
+                    );
                 }
             });
 
@@ -307,18 +267,6 @@ impl ThorApp {
                 if listen_edit.changed() {
                     self.persist_addresses();
                 }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Use Default").clicked() {
-                        self.listen_addr = "0.0.0.0:9000".to_owned();
-                        self.persist_addresses();
-                        self.set_notice("Reset listen address to default");
-                    }
-                    if ui.button("Copy Address").clicked() {
-                        ui.ctx().copy_text(self.listen_addr.clone());
-                        self.set_notice("Copied listen address");
-                    }
-                });
                 ui.add_space(10.0);
                 let button = egui::Button::new(RichText::new("Start Server").strong())
                     .min_size(Vec2::new(ui.available_width(), 34.0));
@@ -351,55 +299,6 @@ impl ThorApp {
                 if target_edit.changed() {
                     self.persist_addresses();
                 }
-                ui.add_space(8.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Use Localhost").clicked() {
-                        self.connect_addr = "127.0.0.1:9000".to_owned();
-                        self.persist_addresses();
-                        self.set_notice("Loaded localhost target");
-                    }
-                    if ui.button("Use Listen Addr").clicked() {
-                        self.connect_addr = self.listen_addr.clone();
-                        self.persist_addresses();
-                        self.set_notice("Copied listen address into target");
-                    }
-                    if ui.button("Copy Target").clicked() {
-                        ui.ctx().copy_text(self.connect_addr.clone());
-                        self.set_notice("Copied target address");
-                    }
-                });
-                if !snapshot.recent_targets.is_empty() {
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new("Recent targets")
-                            .size(12.0)
-                            .color(Color32::from_rgb(143, 155, 171)),
-                    );
-                    ui.add_space(6.0);
-                    ui.horizontal_wrapped(|ui| {
-                        for target in &snapshot.recent_targets {
-                            if ui.button(target).clicked() {
-                                self.connect_addr = target.clone();
-                                self.persist_addresses();
-                                self.set_notice(format!("Loaded recent target {}", target));
-                            }
-                        }
-                    });
-                }
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Retry last target").clicked() {
-                        self.manager.connect(self.connect_addr.clone());
-                        self.set_notice(format!("Retrying {}", self.connect_addr));
-                    }
-                    if let Some(first) = snapshot.recent_targets.first() {
-                        if first != &self.connect_addr && ui.button("Load most recent").clicked() {
-                            self.connect_addr = first.clone();
-                            self.persist_addresses();
-                            self.set_notice(format!("Loaded recent target {}", first));
-                        }
-                    }
-                });
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let button_width = ((ui.available_width() - 8.0) / 2.0).max(96.0);
@@ -430,67 +329,6 @@ impl ThorApp {
                         self.set_notice("Disconnected session");
                     }
                 });
-            });
-
-            ui.add_space(12.0);
-
-            Self::card_frame().show(ui, |ui| {
-                ui.label(RichText::new("Quick start").size(16.0).strong());
-                ui.add_space(10.0);
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 32.0],
-                        egui::Button::new("Local test setup"),
-                    )
-                    .clicked()
-                {
-                    self.listen_addr = "0.0.0.0:9000".to_owned();
-                    self.connect_addr = "127.0.0.1:9000".to_owned();
-                    self.persist_addresses();
-                    self.set_notice("Prepared localhost test addresses");
-                }
-                ui.add_space(8.0);
-                if ui
-                    .add_enabled(
-                        !snapshot.server_running,
-                        egui::Button::new("Start server now")
-                            .min_size(Vec2::new(ui.available_width(), 32.0)),
-                    )
-                    .clicked()
-                {
-                    self.manager.start_server(self.listen_addr.clone());
-                    self.set_notice(format!("Starting server on {}", self.listen_addr));
-                }
-            });
-
-            ui.add_space(12.0);
-
-            Self::card_frame().show(ui, |ui| {
-                ui.label(RichText::new("Session notes").size(16.0).strong());
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new(
-                        "Start the server on the machine being controlled, then connect from the viewer.",
-                    )
-                    .size(13.0)
-                    .color(Color32::from_rgb(157, 168, 182)),
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(
-                        "Click inside the remote screen before sending mouse or keyboard input.",
-                    )
-                    .size(13.0)
-                    .color(Color32::from_rgb(157, 168, 182)),
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(
-                        "For same-machine testing, use one window as server and a second window as viewer.",
-                    )
-                    .size(13.0)
-                    .color(Color32::from_rgb(157, 168, 182)),
-                );
             });
         });
     }
@@ -598,8 +436,10 @@ impl ThorApp {
 
         let x_ratio = ((position.x - rect.min.x) / rect.width()).clamp(0.0, 1.0);
         let y_ratio = ((position.y - rect.min.y) / rect.height()).clamp(0.0, 1.0);
-        let x = (x_ratio * frame_size.0 as f32) as i32;
-        let y = (y_ratio * frame_size.1 as f32) as i32;
+        let max_x = frame_size.0.saturating_sub(1) as f32;
+        let max_y = frame_size.1.saturating_sub(1) as f32;
+        let x = (x_ratio * max_x).round() as i32;
+        let y = (y_ratio * max_y).round() as i32;
         Some((x, y))
     }
 
@@ -716,84 +556,7 @@ impl eframe::App for ThorApp {
             }
             ui.add_space(16.0);
 
-            ui.columns(3, |columns| {
-                columns[0].set_min_width(260.0);
-                columns[1].set_min_width(180.0);
-                columns[2].set_min_width(180.0);
-
-                self.draw_control_panel(&mut columns[0], &snapshot);
-
-                columns[1].vertical(|ui| {
-                    let (accent, _) = Self::status_tone(&snapshot);
-                    Self::draw_info_card(
-                        ui,
-                        "Connection",
-                        if snapshot.connected {
-                            "Connected"
-                        } else {
-                            "Idle"
-                        },
-                        accent,
-                        snapshot.peer_id.as_deref().unwrap_or("No peer connected"),
-                    );
-                    ui.add_space(12.0);
-                    Self::draw_info_card(
-                        ui,
-                        "Server",
-                        if snapshot.server_running {
-                            "Listening"
-                        } else {
-                            "Stopped"
-                        },
-                        Color32::from_rgb(125, 211, 252),
-                        snapshot.listen_addr.as_str(),
-                    );
-                    ui.add_space(12.0);
-                    let stream_size = snapshot
-                        .current_frame_size
-                        .map(|(w, h)| format!("{w} x {h}"))
-                        .unwrap_or_else(|| "No stream yet".to_owned());
-                    Self::draw_info_card(
-                        ui,
-                        "Display",
-                        stream_size.as_str(),
-                        Color32::from_rgb(196, 181, 253),
-                        "Incoming frame dimensions",
-                    );
-                });
-
-                columns[2].vertical(|ui| {
-                    let peer_value = snapshot.peer_id.as_deref().unwrap_or("Unavailable");
-                    Self::draw_info_card(
-                        ui,
-                        "Peer",
-                        peer_value,
-                        Color32::from_rgb(251, 191, 36),
-                        "Current remote controller or host",
-                    );
-                    ui.add_space(12.0);
-                    Self::draw_info_card(
-                        ui,
-                        "Target",
-                        snapshot.target_addr.as_str(),
-                        Color32::from_rgb(248, 113, 113),
-                        "Address used by the viewer",
-                    );
-                    ui.add_space(12.0);
-                    let frame_count = if snapshot.frame_version == 0 {
-                        "No frames".to_owned()
-                    } else {
-                        format!("{} updates", snapshot.frame_version)
-                    };
-                    Self::draw_info_card(
-                        ui,
-                        "Frame flow",
-                        frame_count.as_str(),
-                        Color32::from_rgb(74, 222, 128),
-                        "Decoded frames received in this session",
-                    );
-                });
-            });
+            self.draw_control_panel(ui, &snapshot);
 
             ui.add_space(16.0);
             self.draw_viewer(ui, ctx, &snapshot);

@@ -19,7 +19,6 @@ pub struct AppState {
     pub target_addr: String,
     pub status: String,
     pub server_running: bool,
-    pub recent_targets: Vec<String>,
     pub outbound: Option<mpsc::UnboundedSender<Message>>,
     pub session_nonce: u64,
 }
@@ -31,12 +30,10 @@ pub struct AppSnapshot {
     pub current_frame: Option<Vec<u8>>,
     pub current_frame_size: Option<(usize, usize)>,
     pub frame_version: u64,
-    pub local_id: String,
     pub listen_addr: String,
     pub target_addr: String,
     pub status: String,
     pub server_running: bool,
-    pub recent_targets: Vec<String>,
 }
 
 impl AppState {
@@ -53,7 +50,6 @@ impl AppState {
             target_addr: settings.target_addr,
             status: "Idle".to_owned(),
             server_running: false,
-            recent_targets: settings.recent_targets,
             outbound: None,
             session_nonce: 0,
         }
@@ -66,12 +62,10 @@ impl AppState {
             current_frame: self.current_frame.clone(),
             current_frame_size: self.current_frame_size,
             frame_version: self.frame_version,
-            local_id: self.local_id.clone(),
             listen_addr: self.listen_addr.clone(),
             target_addr: self.target_addr.clone(),
             status: self.status.clone(),
             server_running: self.server_running,
-            recent_targets: self.recent_targets.clone(),
         }
     }
 
@@ -79,19 +73,7 @@ impl AppState {
         AppSettings {
             listen_addr: self.listen_addr.clone(),
             target_addr: self.target_addr.clone(),
-            recent_targets: self.recent_targets.clone(),
         }
-    }
-
-    fn remember_target(&mut self, target_addr: &str) {
-        let trimmed = target_addr.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-
-        self.recent_targets.retain(|item| item != trimmed);
-        self.recent_targets.insert(0, trimmed.to_owned());
-        self.recent_targets.truncate(5);
     }
 
     pub fn begin_session(&mut self) -> u64 {
@@ -151,7 +133,6 @@ impl ConnectionManager {
     pub fn connect(&self, target_addr: String) {
         let session_nonce = if let Ok(mut state) = self.state.lock() {
             state.target_addr = target_addr.clone();
-            state.remember_target(&target_addr);
             let _ = save_settings(&state.settings());
             let session_nonce = state.begin_session();
             state.clear_connection_state();
@@ -205,8 +186,7 @@ impl ConnectionManager {
     pub fn update_addresses(&self, listen_addr: String, target_addr: String) {
         if let Ok(mut state) = self.state.lock() {
             state.listen_addr = listen_addr;
-            state.target_addr = target_addr.clone();
-            state.remember_target(&target_addr);
+            state.target_addr = target_addr;
             let _ = save_settings(&state.settings());
         }
     }

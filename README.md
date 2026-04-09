@@ -64,7 +64,6 @@ ThorC is GUI-driven. In the window:
 - Use `Target` plus `Connect` on the controller machine.
 - Use `Disconnect` to close the active session.
 - ThorC remembers the last listen and target addresses between launches.
-- ThorC also keeps a short recent-target list in the GUI for faster reconnects.
 
 ## Local Test Flow
 
