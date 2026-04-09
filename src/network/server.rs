@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tokio::time::sleep;
 
 use crate::core::connection::AppState;
-use crate::core::protocol::{read_message, write_message, Message};
+use crate::core::protocol::{
+    read_message, write_message, Message, FRAME_CHUNK_SIZE, MAX_FRAME_SIZE,
+};
 use crate::input::keyboard::execute_keyboard_event;
 use crate::input::mouse::execute_mouse_event;
-use crate::screen::capture::capture_primary_frame;
+use crate::screen::capture::PrimaryCapturer;
 use crate::screen::encode::encode_frame;
 
 pub async fn run_server(state: Arc<Mutex<AppState>>, listen_addr: String) -> io::Result<()> {
@@ -134,6 +135,8 @@ async fn handle_client(
             }
             Ok(Message::ConnectAccept)
             | Ok(Message::ConnectReject { .. })
+            | Ok(Message::FrameStart { .. })
+            | Ok(Message::FrameChunk { .. })
             | Ok(Message::Frame { .. }) => {}
             Err(err) => return Err(err),
         }
@@ -145,7 +148,19 @@ fn spawn_frame_sender(
     outbound_tx: mpsc::UnboundedSender<Message>,
     session_nonce: u64,
 ) {
-    tokio::spawn(async move {
+    tokio::task::spawn_blocking(move || {
+        let mut capturer = match PrimaryCapturer::new() {
+            Ok(capturer) => capturer,
+            Err(err) => {
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status = format!("Screen capture init failed: {err}");
+                    }
+                }
+                return;
+            }
+        };
+
         loop {
             let is_current = state
                 .lock()
@@ -155,21 +170,73 @@ fn spawn_frame_sender(
                 break;
             }
 
-            let capture_result = tokio::task::spawn_blocking(capture_primary_frame).await;
-            let frame = match capture_result {
-                Ok(Ok(frame)) => frame,
-                Ok(Err(_)) | Err(_) => {
-                    sleep(Duration::from_millis(250)).await;
+            let frame = match capturer.capture_frame() {
+                Ok(frame) => frame,
+                Err(err) => {
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.status = format!("Screen capture failed: {err}");
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
                     continue;
                 }
             };
 
             let encoded = encode_frame(frame.width, frame.height, &frame.data);
-            if outbound_tx.send(Message::Frame { data: encoded }).is_err() {
+            if encoded.len() > MAX_FRAME_SIZE {
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status =
+                            format!("Screen frame too large to stream: {} bytes", encoded.len());
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(250));
+                continue;
+            }
+
+            let send_result = if encoded.len() <= FRAME_CHUNK_SIZE {
+                outbound_tx.send(Message::Frame { data: encoded })
+            } else {
+                let start_result = outbound_tx.send(Message::FrameStart {
+                    total_len: encoded.len() as u32,
+                });
+
+                if start_result.is_err() {
+                    break;
+                }
+
+                let mut failed = false;
+                for chunk in encoded.chunks(FRAME_CHUNK_SIZE) {
+                    if outbound_tx
+                        .send(Message::FrameChunk {
+                            data: chunk.to_vec(),
+                        })
+                        .is_err()
+                    {
+                        failed = true;
+                        break;
+                    }
+                }
+
+                if failed {
+                    Err(mpsc::error::SendError(Message::Disconnect))
+                } else {
+                    Ok(())
+                }
+            };
+
+            if send_result.is_err() {
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status = "Screen stream stopped: client channel closed".to_owned();
+                        state.clear_connection_state();
+                    }
+                }
                 break;
             }
 
-            sleep(Duration::from_millis(100)).await;
+            std::thread::sleep(Duration::from_millis(100));
         }
     });
 }

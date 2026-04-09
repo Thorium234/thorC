@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+pub const MAX_FRAME_SIZE: usize = 128 * 1024 * 1024;
+pub const FRAME_CHUNK_SIZE: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -11,6 +13,8 @@ pub enum Message {
     ConnectAccept,
     ConnectReject { reason: String },
     Frame { data: Vec<u8> },
+    FrameStart { total_len: u32 },
+    FrameChunk { data: Vec<u8> },
     MouseEvent { x: i32, y: i32, button: String },
     KeyboardEvent { key: String },
     Disconnect,

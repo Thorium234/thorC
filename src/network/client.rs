@@ -5,8 +5,41 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 
 use crate::core::connection::AppState;
-use crate::core::protocol::{read_message, write_message, Message};
+use crate::core::protocol::{read_message, write_message, Message, MAX_FRAME_SIZE};
 use crate::screen::decode::decode_frame;
+
+struct PendingFrame {
+    total_len: usize,
+    data: Vec<u8>,
+}
+
+fn apply_decoded_frame(
+    state: &Arc<Mutex<AppState>>,
+    session_nonce: u64,
+    target_addr: &str,
+    data: &[u8],
+) {
+    match decode_frame(data) {
+        Ok(frame) => {
+            if let Ok(mut state) = state.lock() {
+                if state.is_current_session(session_nonce) {
+                    state.current_frame = Some(frame.rgba);
+                    state.current_frame_size = Some((frame.width, frame.height));
+                    state.frame_version = state.frame_version.wrapping_add(1);
+                    state.connected = true;
+                    state.status = format!("Streaming from {target_addr}");
+                }
+            }
+        }
+        Err(err) => {
+            if let Ok(mut state) = state.lock() {
+                if state.is_current_session(session_nonce) {
+                    state.status = format!("Failed to decode frame: {err}");
+                }
+            }
+        }
+    }
+}
 
 pub async fn connect_to_peer(
     state: Arc<Mutex<AppState>>,
@@ -48,6 +81,7 @@ pub async fn connect_to_peer(
     outbound_tx
         .send(Message::ConnectRequest { id: local_id })
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "failed to send handshake"))?;
+    let mut pending_frame: Option<PendingFrame> = None;
 
     loop {
         match read_message(&mut reader).await {
@@ -68,26 +102,43 @@ pub async fn connect_to_peer(
                 }
                 return Err(io::Error::new(io::ErrorKind::ConnectionRefused, reason));
             }
-            Ok(Message::Frame { data }) => match decode_frame(&data) {
-                Ok(frame) => {
-                    if let Ok(mut state) = state.lock() {
-                        if state.is_current_session(session_nonce) {
-                            state.current_frame = Some(frame.rgba);
-                            state.current_frame_size = Some((frame.width, frame.height));
-                            state.frame_version = state.frame_version.wrapping_add(1);
-                            state.connected = true;
-                            state.status = format!("Streaming from {target_addr}");
-                        }
-                    }
+            Ok(Message::Frame { data }) => {
+                pending_frame = None;
+                apply_decoded_frame(&state, session_nonce, &target_addr, &data);
+            }
+            Ok(Message::FrameStart { total_len }) => {
+                let total_len = total_len as usize;
+                if total_len > MAX_FRAME_SIZE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "received oversized frame stream",
+                    ));
                 }
-                Err(err) => {
-                    if let Ok(mut state) = state.lock() {
-                        if state.is_current_session(session_nonce) {
-                            state.status = format!("Failed to decode frame: {err}");
-                        }
-                    }
+
+                pending_frame = Some(PendingFrame {
+                    total_len,
+                    data: Vec::with_capacity(total_len),
+                });
+            }
+            Ok(Message::FrameChunk { data }) => {
+                let Some(frame) = pending_frame.as_mut() else {
+                    continue;
+                };
+
+                if frame.data.len() + data.len() > frame.total_len {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "frame chunk exceeded declared size",
+                    ));
                 }
-            },
+
+                frame.data.extend_from_slice(&data);
+
+                if frame.data.len() == frame.total_len {
+                    let complete_frame = pending_frame.take().expect("pending frame exists");
+                    apply_decoded_frame(&state, session_nonce, &target_addr, &complete_frame.data);
+                }
+            }
             Ok(Message::Disconnect) => {
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
