@@ -91,11 +91,11 @@ async fn handle_client(
 
     loop {
         match read_message(&mut reader).await {
-            Ok(Message::ConnectRequest { id }) => {
+            Ok(Message::ConnectRequest) => {
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
-                        state.activate_session(id.clone());
-                        state.status = format!("Connected to controller {id}");
+                        state.activate_session();
+                        state.status = "Connected to controller".to_owned();
                     }
                 }
 

@@ -251,14 +251,6 @@ impl ThorApp {
                         .size(14.0)
                         .color(Color32::from_rgb(157, 168, 182)),
                 );
-                if let Some(peer_id) = snapshot.peer_id.as_deref() {
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(format!("Peer: {peer_id}"))
-                            .size(13.0)
-                            .color(Color32::from_rgb(210, 215, 222)),
-                    );
-                }
                 ui.add_space(8.0);
                 ui.label(
                     RichText::new(format!("Mode: {}", snapshot.connection_label))

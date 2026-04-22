@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex};
 
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
-use uuid::Uuid;
 
 use crate::core::protocol::Message;
 use crate::core::settings::{load_settings, save_settings, AppSettings};
@@ -29,11 +28,9 @@ impl ConnectionPhase {
 
 pub struct AppState {
     pub connected: bool,
-    pub peer_id: Option<String>,
     pub current_frame: Option<Vec<u8>>,
     pub current_frame_size: Option<(usize, usize)>,
     pub frame_version: u64,
-    pub local_id: String,
     pub listen_addr: String,
     pub target_addr: String,
     pub status: String,
@@ -49,7 +46,6 @@ pub struct AppState {
 pub struct AppSnapshot {
     pub connected: bool,
     pub connecting: bool,
-    pub peer_id: Option<String>,
     pub current_frame: Option<Vec<u8>>,
     pub current_frame_size: Option<(usize, usize)>,
     pub frame_version: u64,
@@ -67,11 +63,9 @@ impl AppState {
         let settings = load_settings();
         Self {
             connected: false,
-            peer_id: None,
             current_frame: None,
             current_frame_size: None,
             frame_version: 0,
-            local_id: Uuid::new_v4().to_string(),
             listen_addr: settings.listen_addr,
             target_addr: settings.target_addr,
             status: "Idle".to_owned(),
@@ -88,7 +82,6 @@ impl AppState {
         AppSnapshot {
             connected: self.connected,
             connecting: matches!(self.phase, ConnectionPhase::Connecting),
-            peer_id: self.peer_id.clone(),
             current_frame: self.current_frame.clone(),
             current_frame_size: self.current_frame_size,
             frame_version: self.frame_version,
@@ -123,7 +116,6 @@ impl AppState {
 
     pub fn clear_connection_state(&mut self) {
         self.connected = false;
-        self.peer_id = None;
         self.current_frame = None;
         self.current_frame_size = None;
         self.frame_version = 0;
@@ -135,9 +127,8 @@ impl AppState {
         self.phase = ConnectionPhase::Failed;
     }
 
-    pub fn activate_session(&mut self, peer_id: String) {
+    pub fn activate_session(&mut self) {
         self.connected = true;
-        self.peer_id = Some(peer_id);
         self.phase = ConnectionPhase::Connected;
     }
 

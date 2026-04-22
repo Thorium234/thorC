@@ -28,11 +28,7 @@ fn apply_decoded_frame(
                     state.current_frame_size = Some((frame.width, frame.height));
                     state.frame_version = state.frame_version.wrapping_add(1);
                     state.record_bytes_received(data.len());
-                    let peer = state
-                        .peer_id
-                        .clone()
-                        .unwrap_or_else(|| target_addr.to_owned());
-                    state.activate_session(peer);
+                    state.activate_session();
                     state.status = format!("Streaming from {target_addr}");
                 }
             }
@@ -98,10 +94,6 @@ fn apply_delta_frame(
             }
         }
 
-        let peer = state
-            .peer_id
-            .clone()
-            .unwrap_or_else(|| target_addr.to_owned());
         state.current_frame = Some(current);
         state.current_frame_size = Some((width as usize, height as usize));
         state.frame_version = state.frame_version.wrapping_add(1);
@@ -110,7 +102,7 @@ fn apply_delta_frame(
             .map(|region| region.data.len())
             .sum::<usize>();
         state.record_bytes_received(delta_bytes);
-        state.activate_session(peer);
+        state.activate_session();
         state.status = format!("Streaming from {target_addr}");
     }
 }
@@ -146,15 +138,8 @@ pub async fn connect_to_peer(
         }
     });
 
-    let local_id = {
-        let state = state
-            .lock()
-            .map_err(|_| io::Error::other("state lock poisoned"))?;
-        state.local_id.clone()
-    };
-
     outbound_tx
-        .send(Message::ConnectRequest { id: local_id })
+        .send(Message::ConnectRequest)
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "failed to send handshake"))?;
     let mut pending_frame: Option<PendingFrame> = None;
 
@@ -245,7 +230,7 @@ pub async fn connect_to_peer(
                 }
                 return Ok(());
             }
-            Ok(Message::ConnectRequest { .. })
+            Ok(Message::ConnectRequest)
             | Ok(Message::MouseEvent { .. })
             | Ok(Message::MouseScroll { .. })
             | Ok(Message::KeyboardEvent { .. }) => {}

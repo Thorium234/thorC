@@ -9,9 +9,7 @@ pub const FRAME_CHUNK_SIZE: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
-    ConnectRequest {
-        id: String,
-    },
+    ConnectRequest,
     ConnectAccept,
     ConnectReject {
         reason: String,
