@@ -127,7 +127,7 @@ pub async fn connect_to_peer(
     {
         let mut state = state
             .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "state lock poisoned"))?;
+            .map_err(|_| io::Error::other("state lock poisoned"))?;
         if !state.is_current_session(session_nonce) {
             return Ok(());
         }
@@ -149,7 +149,7 @@ pub async fn connect_to_peer(
     let local_id = {
         let state = state
             .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "state lock poisoned"))?;
+            .map_err(|_| io::Error::other("state lock poisoned"))?;
         state.local_id.clone()
     };
 

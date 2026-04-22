@@ -34,6 +34,14 @@ pub struct DeltaEncoder {
     last_height: usize,
 }
 
+#[derive(Clone, Copy)]
+struct CellRect {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
 impl DeltaEncoder {
     pub fn new(config: DeltaConfig) -> Self {
         Self {
@@ -75,35 +83,38 @@ impl DeltaEncoder {
             return None;
         }
 
-        let last = self.last_frame.as_ref().expect("last frame exists");
+        let last = self.last_frame.as_ref()?;
         let cell_size = self.config.cell_size as usize;
-        let cells_x = (width + cell_size - 1) / cell_size;
-        let cells_y = (height + cell_size - 1) / cell_size;
+        let cells_x = width.div_ceil(cell_size);
+        let cells_y = height.div_ceil(cell_size);
         let total_cells = cells_x * cells_y;
         let mut changed_cells = 0usize;
         let mut regions = Vec::new();
 
         for cy in 0..cells_y {
             for cx in 0..cells_x {
-                let x = cx * cell_size;
-                let y = cy * cell_size;
-                let w = cell_size.min(width - x);
-                let h = cell_size.min(height - y);
+                let rect = CellRect {
+                    x: cx * cell_size,
+                    y: cy * cell_size,
+                    width: cell_size.min(width - (cx * cell_size)),
+                    height: cell_size.min(height - (cy * cell_size)),
+                };
 
-                if self.cells_differ(last, frame, width, x, y, w, h) {
+                if self.cells_differ(last, frame, width, rect) {
                     changed_cells += 1;
                     // Extract the changed region data
-                    let mut region_data = Vec::with_capacity(w * h * bytes_per_pixel);
-                    for row in y..(y + h) {
-                        let start = row * row_stride + x * bytes_per_pixel;
-                        let end = start + w * bytes_per_pixel;
+                    let mut region_data =
+                        Vec::with_capacity(rect.width * rect.height * bytes_per_pixel);
+                    for row in rect.y..(rect.y + rect.height) {
+                        let start = row * row_stride + rect.x * bytes_per_pixel;
+                        let end = start + rect.width * bytes_per_pixel;
                         region_data.extend_from_slice(&frame[start..end]);
                     }
                     regions.push(DeltaRegion {
-                        x: x as u32,
-                        y: y as u32,
-                        width: w as u32,
-                        height: h as u32,
+                        x: rect.x as u32,
+                        y: rect.y as u32,
+                        width: rect.width as u32,
+                        height: rect.height as u32,
                         data: region_data,
                     });
                 }
@@ -123,21 +134,12 @@ impl DeltaEncoder {
     }
 
     /// Check if a cell region differs between two frames.
-    fn cells_differ(
-        &self,
-        a: &[u8],
-        b: &[u8],
-        width: usize,
-        x: usize,
-        y: usize,
-        w: usize,
-        h: usize,
-    ) -> bool {
+    fn cells_differ(&self, a: &[u8], b: &[u8], width: usize, rect: CellRect) -> bool {
         let bytes_per_pixel = 4;
         let row_stride = width * bytes_per_pixel;
-        for row in y..(y + h) {
-            let start = row * row_stride + x * bytes_per_pixel;
-            let end = start + w * bytes_per_pixel;
+        for row in rect.y..(rect.y + rect.height) {
+            let start = row * row_stride + rect.x * bytes_per_pixel;
+            let end = start + rect.width * bytes_per_pixel;
             if a[start..end] != b[start..end] {
                 return true;
             }

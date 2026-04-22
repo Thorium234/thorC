@@ -50,7 +50,7 @@ async fn handle_client(
     let reject_busy = {
         let state = state
             .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "state lock poisoned"))?;
+            .map_err(|_| io::Error::other("state lock poisoned"))?;
         state.outbound.is_some() || state.connected
     };
 
@@ -68,7 +68,7 @@ async fn handle_client(
     let session_nonce = {
         let mut state = state
             .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "state lock poisoned"))?;
+            .map_err(|_| io::Error::other("state lock poisoned"))?;
         let session_nonce = state.begin_session();
         state.clear_connection_state();
         state.status = "Waiting for controller handshake".to_owned();
@@ -150,7 +150,7 @@ async fn handle_client(
                 }
                 return Ok(());
             }
-            Ok(Message::ConnectAccept { .. })
+            Ok(Message::ConnectAccept)
             | Ok(Message::ConnectReject { .. })
             | Ok(Message::FrameStart { .. })
             | Ok(Message::FrameChunk { .. })
