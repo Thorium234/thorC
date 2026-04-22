@@ -8,8 +8,14 @@ pub fn execute_mouse_event(x: i32, y: i32, button: &str) -> io::Result<()> {
 
     match button {
         "left" => enigo.mouse_click(MouseButton::Left),
+        "left_down" => enigo.mouse_down(MouseButton::Left),
+        "left_up" => enigo.mouse_up(MouseButton::Left),
         "right" => enigo.mouse_click(MouseButton::Right),
+        "right_down" => enigo.mouse_down(MouseButton::Right),
+        "right_up" => enigo.mouse_up(MouseButton::Right),
         "middle" => enigo.mouse_click(MouseButton::Middle),
+        "middle_down" => enigo.mouse_down(MouseButton::Middle),
+        "middle_up" => enigo.mouse_up(MouseButton::Middle),
         "move" | "" => {}
         other => {
             return Err(io::Error::new(

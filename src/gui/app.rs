@@ -367,7 +367,7 @@ impl ThorApp {
         } else if snapshot.connecting {
             "Connecting to the remote machine."
         } else if snapshot.connected {
-            "Connected. Click inside the frame to send input."
+            "Connected. Click, drag, and type inside the frame to control the remote desktop."
         } else if snapshot.server_running {
             "Server is listening. Connect from another ThorC window or machine."
         } else {
@@ -517,22 +517,6 @@ impl ThorApp {
                     self.last_pointer_position = Some((x, y));
                 }
 
-                if response.clicked_by(egui::PointerButton::Primary) {
-                    self.manager.send_message(Message::MouseEvent {
-                        x,
-                        y,
-                        button: "left".to_owned(),
-                    });
-                }
-
-                if response.clicked_by(egui::PointerButton::Secondary) {
-                    self.manager.send_message(Message::MouseEvent {
-                        x,
-                        y,
-                        button: "right".to_owned(),
-                    });
-                }
-
                 let scroll_delta = ctx.input(|input| input.raw_scroll_delta);
                 let delta_x = Self::normalize_scroll_delta(scroll_delta.x);
                 let delta_y = Self::normalize_scroll_delta(scroll_delta.y);
@@ -551,6 +535,24 @@ impl ThorApp {
             let events = ctx.input(|input| input.events.clone());
             for event in events {
                 match event {
+                    egui::Event::PointerButton {
+                        pos,
+                        button,
+                        pressed,
+                        ..
+                    } => {
+                        if let Some((x, y)) =
+                            Self::map_pointer_to_remote(response.rect, pos, frame_size)
+                        {
+                            if let Some(button) = map_pointer_button(button, pressed) {
+                                self.manager.send_message(Message::MouseEvent {
+                                    x,
+                                    y,
+                                    button: button.to_owned(),
+                                });
+                            }
+                        }
+                    }
                     egui::Event::Text(text) => {
                         for character in text.chars() {
                             self.manager.send_message(Message::KeyboardEvent {
@@ -585,6 +587,18 @@ fn map_key(key: egui::Key) -> Option<&'static str> {
         egui::Key::Backspace => Some("backspace"),
         egui::Key::Escape => Some("escape"),
         egui::Key::Space => Some("space"),
+        _ => None,
+    }
+}
+
+fn map_pointer_button(button: egui::PointerButton, pressed: bool) -> Option<&'static str> {
+    match (button, pressed) {
+        (egui::PointerButton::Primary, true) => Some("left_down"),
+        (egui::PointerButton::Primary, false) => Some("left_up"),
+        (egui::PointerButton::Secondary, true) => Some("right_down"),
+        (egui::PointerButton::Secondary, false) => Some("right_up"),
+        (egui::PointerButton::Middle, true) => Some("middle_down"),
+        (egui::PointerButton::Middle, false) => Some("middle_up"),
         _ => None,
     }
 }
