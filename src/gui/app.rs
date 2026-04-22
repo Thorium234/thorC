@@ -47,6 +47,13 @@ impl ThorApp {
     }
 
     fn refresh_texture(&mut self, ctx: &egui::Context, snapshot: &AppSnapshot) {
+        if snapshot.current_frame.is_none() || snapshot.frame_version < self.last_frame_version {
+            self.texture = None;
+            self.last_frame_version = snapshot.frame_version;
+            self.last_pointer_position = None;
+            return;
+        }
+
         if snapshot.frame_version == self.last_frame_version {
             return;
         }
@@ -110,7 +117,11 @@ impl ThorApp {
 
     fn is_address_ready(value: &str) -> bool {
         let trimmed = value.trim();
-        !trimmed.is_empty() && trimmed.contains(':')
+        let Some((host, port)) = trimmed.rsplit_once(':') else {
+            return false;
+        };
+
+        !host.trim().is_empty() && port.parse::<u16>().is_ok()
     }
 
     fn persist_addresses(&self) {
@@ -238,6 +249,14 @@ impl ThorApp {
                         .size(14.0)
                         .color(Color32::from_rgb(157, 168, 182)),
                 );
+                if let Some(session_state) = snapshot.session_state.as_deref() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(format!("State: {session_state}"))
+                            .size(13.0)
+                            .color(Color32::from_rgb(210, 215, 222)),
+                    );
+                }
                 if let Some(peer_id) = snapshot.peer_id.as_deref() {
                     ui.add_space(8.0);
                     ui.label(
@@ -246,6 +265,15 @@ impl ThorApp {
                             .color(Color32::from_rgb(210, 215, 222)),
                     );
                 }
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(format!(
+                        "Traffic: {} B sent, {} B received",
+                        snapshot.bytes_sent, snapshot.bytes_received
+                    ))
+                    .size(13.0)
+                    .color(Color32::from_rgb(210, 215, 222)),
+                );
             });
 
             ui.add_space(12.0);
@@ -271,8 +299,13 @@ impl ThorApp {
                 let button = egui::Button::new(RichText::new("Start Server").strong())
                     .min_size(Vec2::new(ui.available_width(), 34.0));
                 if ui
-                    .add_enabled(!snapshot.server_running, button)
-                    .on_disabled_hover_text("The server is already running in this window")
+                    .add_enabled(
+                        !snapshot.server_running && Self::is_address_ready(&self.listen_addr),
+                        button,
+                    )
+                    .on_disabled_hover_text(
+                        "Enter a listen address like 0.0.0.0:9000, or stop using this window for hosting",
+                    )
                     .clicked()
                 {
                     self.manager.start_server(self.listen_addr.clone());
@@ -464,7 +497,10 @@ impl ThorApp {
     ) {
         let frame_size = match snapshot.current_frame_size {
             Some(size) => size,
-            None => return,
+            None => {
+                self.last_pointer_position = None;
+                return;
+            }
         };
 
         if response.clicked() {

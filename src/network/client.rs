@@ -1,4 +1,5 @@
 use std::io;
+use std::mem;
 use std::sync::{Arc, Mutex};
 
 use tokio::net::TcpStream;
@@ -26,6 +27,7 @@ fn apply_decoded_frame(
                     state.current_frame = Some(frame.rgba);
                     state.current_frame_size = Some((frame.width, frame.height));
                     state.frame_version = state.frame_version.wrapping_add(1);
+                    state.record_bytes_received(data.len());
                     let peer = state.peer_id.clone().unwrap_or_else(|| target_addr.to_owned());
                     state.activate_session(peer);
                     state.status = format!("Streaming from {target_addr}");
@@ -98,7 +100,10 @@ fn apply_delta_frame(
         state.current_frame = Some(current);
         state.current_frame_size = Some((width as usize, height as usize));
         state.frame_version = state.frame_version.wrapping_add(1);
+        let delta_bytes = regions.iter().map(|region| region.data.len()).sum::<usize>();
+        state.record_bytes_received(delta_bytes);
         state.activate_session(peer);
+        state.status = format!("Streaming from {target_addr}");
     }
 }
 
@@ -162,7 +167,8 @@ pub async fn connect_to_peer(
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
                         state.connected = true;
-                        state.status = format!("Connected to {target_addr}");
+                        state.status =
+                            format!("Connected to {target_addr} (session {session_id})");
                     }
                 }
             }
@@ -170,6 +176,7 @@ pub async fn connect_to_peer(
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
                         state.clear_connection_state();
+                        state.mark_session_failed();
                         state.status = format!("Connection rejected: {reason}");
                     }
                 }
@@ -189,6 +196,12 @@ pub async fn connect_to_peer(
             Ok(Message::FrameStart { total_len }) => {
                 let total_len = total_len as usize;
                 if total_len > MAX_FRAME_SIZE {
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.clear_connection_state();
+                            state.mark_session_failed();
+                        }
+                    }
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "received oversized frame stream",
@@ -206,6 +219,12 @@ pub async fn connect_to_peer(
                 };
 
                 if frame.data.len() + data.len() > frame.total_len {
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.clear_connection_state();
+                            state.mark_session_failed();
+                        }
+                    }
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "frame chunk exceeded declared size",
@@ -215,7 +234,10 @@ pub async fn connect_to_peer(
                 frame.data.extend_from_slice(&data);
 
                 if frame.data.len() == frame.total_len {
-                    let complete_frame = pending_frame.take().expect("pending frame exists");
+                    let complete_frame = mem::take(&mut pending_frame)
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "missing pending frame")
+                        })?;
                     apply_decoded_frame(&state, session_nonce, &target_addr, &complete_frame.data);
                 }
             }
@@ -247,6 +269,7 @@ pub async fn connect_to_peer(
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
                         state.clear_connection_state();
+                        state.mark_session_failed();
                         state.status = format!("Connection lost: {err}");
                     }
                 }

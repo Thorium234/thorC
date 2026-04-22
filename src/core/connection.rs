@@ -123,6 +123,12 @@ impl AppState {
         }
     }
 
+    pub fn mark_session_failed(&mut self) {
+        if let Some(ref mut session) = self.session {
+            session.fail();
+        }
+    }
+
     /// v2: Activate the session after successful connection.
     pub fn activate_session(&mut self, peer_id: String) {
         self.connected = true;
@@ -228,6 +234,7 @@ impl ConnectionManager {
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
                         state.clear_connection_state();
+                        state.mark_session_failed();
                         state.status = format!("Connection to {target_addr} failed: {err}");
                     }
                 }
@@ -246,6 +253,7 @@ impl ConnectionManager {
             if sender.send(message).is_err() {
                 if let Ok(mut state) = self.state.lock() {
                     state.clear_connection_state();
+                    state.mark_session_failed();
                     state.status = "Connection dropped while sending".to_owned();
                 }
             }
