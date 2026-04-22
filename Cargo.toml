@@ -14,12 +14,4 @@ serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 
-# Encryption: snow for Noise Protocol Framework (snowstorm wraps it for sockets)
-snow = "0.9"
-rand = "0.8"
-
-# Compression for frame streaming
 flate2 = "1.0"
-
-# Relay server support
-tokio-util = { version = "0.7", features = ["codec"] }

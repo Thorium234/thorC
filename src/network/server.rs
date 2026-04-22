@@ -15,6 +15,8 @@ use crate::screen::capture::PrimaryCapturer;
 use crate::screen::delta::DeltaEncoder;
 use crate::screen::encode::encode_frame;
 
+const TARGET_FPS: u64 = 15;
+
 pub async fn run_server(state: Arc<Mutex<AppState>>, listen_addr: String) -> io::Result<()> {
     let listener = TcpListener::bind(&listen_addr).await?;
     if let Ok(mut state) = state.lock() {
@@ -69,6 +71,7 @@ async fn handle_client(
             .map_err(|_| io::Error::new(io::ErrorKind::Other, "state lock poisoned"))?;
         let session_nonce = state.begin_session();
         state.clear_connection_state();
+        state.status = "Waiting for controller handshake".to_owned();
         state.outbound = Some(outbound_tx.clone());
         session_nonce
     };
@@ -88,17 +91,7 @@ async fn handle_client(
 
     loop {
         match read_message(&mut reader).await {
-            Ok(Message::ConnectRequest { id, session_id }) => {
-                // v2: Generate a session ID if the client didn't provide one
-                let assigned_session_id = session_id.unwrap_or_else(|| {
-                    let state = state.lock().ok();
-                    state
-                        .as_ref()
-                        .and_then(|s| s.session.as_ref())
-                        .map(|s| s.id.as_str().to_owned())
-                        .unwrap_or_else(|| "unknown".to_owned())
-                });
-
+            Ok(Message::ConnectRequest { id }) => {
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
                         state.activate_session(id.clone());
@@ -106,13 +99,9 @@ async fn handle_client(
                     }
                 }
 
-                outbound_tx
-                    .send(Message::ConnectAccept {
-                        session_id: assigned_session_id,
-                    })
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "failed to send accept")
-                    })?;
+                outbound_tx.send(Message::ConnectAccept).map_err(|_| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "failed to send accept")
+                })?;
 
                 if !frame_task_started {
                     frame_task_started = true;
@@ -149,21 +138,6 @@ async fn handle_client(
                             state.status = format!("Keyboard input failed: {err}");
                         }
                     }
-                }
-            }
-            Ok(Message::Heartbeat) => {
-                // v2: Respond to heartbeat
-                if let Ok(state) = state.lock() {
-                    if state.is_current_session(session_nonce) {
-                        let _ = outbound_tx.send(Message::Heartbeat);
-                    }
-                }
-            }
-            Ok(Message::ReconnectRequest) => {
-                // v2: Client is asking for a fresh frame
-                if !frame_task_started {
-                    frame_task_started = true;
-                    spawn_frame_sender(state.clone(), outbound_tx.clone(), session_nonce);
                 }
             }
             Ok(Message::Disconnect) => {
@@ -205,19 +179,8 @@ fn spawn_frame_sender(
             }
         };
 
-        // v2: Initialize delta encoder
         let mut delta_encoder = DeltaEncoder::new(Default::default());
-        let use_delta = state
-            .lock()
-            .map(|s| s.delta_encoding)
-            .unwrap_or(true);
-
-        // v2: Calculate frame interval from target FPS
-        let target_fps = state
-            .lock()
-            .map(|s| s.target_fps.max(1).min(60))
-            .unwrap_or(15);
-        let frame_interval = Duration::from_millis(1000 / target_fps as u64);
+        let frame_interval = Duration::from_millis(1000 / TARGET_FPS);
 
         loop {
             let is_current = state
@@ -241,55 +204,52 @@ fn spawn_frame_sender(
                 }
             };
 
-            // v2: Try delta encoding if enabled
-            if use_delta {
-                if let Some(regions) =
-                    delta_encoder.compute_delta(&frame.data, frame.width, frame.height)
-                {
-                    // Delta detected: send regions
-                    if regions.is_empty() {
-                        // No changes, skip this frame to save bandwidth
-                        std::thread::sleep(frame_interval);
-                        continue;
-                    }
-
-                    let delta_msg = Message::DeltaFrame {
-                        width: frame.width as u32,
-                        height: frame.height as u32,
-                        regions: regions
-                            .into_iter()
-                            .map(|r| crate::core::protocol::DeltaRegion {
-                                x: r.x,
-                                y: r.y,
-                                width: r.width,
-                                height: r.height,
-                                data: r.data,
-                            })
-                            .collect(),
-                    };
-
-                    if outbound_tx.send(delta_msg).is_err() {
-                        if let Ok(mut state) = state.lock() {
-                            if state.is_current_session(session_nonce) {
-                                state.status =
-                                    "Screen stream stopped: client channel closed".to_owned();
-                                state.clear_connection_state();
-                            }
-                        }
-                        break;
-                    }
-
-                    if let Ok(mut state) = state.lock() {
-                        if state.is_current_session(session_nonce) {
-                            state.record_bytes_sent(
-                                frame.width * frame.height * 4, // approximate
-                            );
-                        }
-                    }
-
+            if let Some(regions) =
+                delta_encoder.compute_delta(&frame.data, frame.width, frame.height)
+            {
+                if regions.is_empty() {
                     std::thread::sleep(frame_interval);
                     continue;
                 }
+
+                let bytes_sent = regions
+                    .iter()
+                    .map(|region| region.data.len())
+                    .sum::<usize>();
+                let delta_msg = Message::DeltaFrame {
+                    width: frame.width as u32,
+                    height: frame.height as u32,
+                    regions: regions
+                        .into_iter()
+                        .map(|r| crate::core::protocol::DeltaRegion {
+                            x: r.x,
+                            y: r.y,
+                            width: r.width,
+                            height: r.height,
+                            data: r.data,
+                        })
+                        .collect(),
+                };
+
+                if outbound_tx.send(delta_msg).is_err() {
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.status =
+                                "Screen stream stopped: client channel closed".to_owned();
+                            state.clear_connection_state();
+                        }
+                    }
+                    break;
+                }
+
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.record_bytes_sent(bytes_sent);
+                    }
+                }
+
+                std::thread::sleep(frame_interval);
+                continue;
             }
 
             // Fallback: full frame
@@ -313,7 +273,6 @@ fn spawn_frame_sender(
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
                         state.record_bytes_sent(data_len);
-                        state.record_frame();
                     }
                 }
                 true
@@ -346,7 +305,6 @@ fn spawn_frame_sender(
                     if let Ok(mut state) = state.lock() {
                         if state.is_current_session(session_nonce) {
                             state.record_bytes_sent(data_len);
-                            state.record_frame();
                         }
                     }
                     true

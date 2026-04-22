@@ -5,9 +5,27 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::core::protocol::Message;
-use crate::core::session::{SessionConfig, SessionId, SessionInfo, SessionState};
 use crate::core::settings::{load_settings, save_settings, AppSettings};
 use crate::network::{client, server};
+
+#[derive(Clone, Copy)]
+pub enum ConnectionPhase {
+    Idle,
+    Connecting,
+    Connected,
+    Failed,
+}
+
+impl ConnectionPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Idle => "Idle",
+            Self::Connecting => "Connecting",
+            Self::Connected => "Connected",
+            Self::Failed => "Failed",
+        }
+    }
+}
 
 pub struct AppState {
     pub connected: bool,
@@ -18,24 +36,19 @@ pub struct AppState {
     pub local_id: String,
     pub listen_addr: String,
     pub target_addr: String,
-    pub relay_addr: Option<String>,
     pub status: String,
     pub server_running: bool,
     pub outbound: Option<mpsc::UnboundedSender<Message>>,
     pub session_nonce: u64,
-    /// v2: Active session tracking.
-    pub session: Option<SessionInfo>,
-    /// v2: Session configuration.
-    pub session_config: SessionConfig,
-    /// v2: Enable delta frame encoding.
-    pub delta_encoding: bool,
-    /// v2: Target FPS for screen streaming.
-    pub target_fps: u32,
+    pub phase: ConnectionPhase,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
 }
 
 #[derive(Clone)]
 pub struct AppSnapshot {
     pub connected: bool,
+    pub connecting: bool,
     pub peer_id: Option<String>,
     pub current_frame: Option<Vec<u8>>,
     pub current_frame_size: Option<(usize, usize)>,
@@ -44,9 +57,7 @@ pub struct AppSnapshot {
     pub target_addr: String,
     pub status: String,
     pub server_running: bool,
-    /// v2: Session state for display.
-    pub session_state: Option<String>,
-    /// v2: Bytes sent/received stats.
+    pub connection_label: String,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
@@ -63,21 +74,20 @@ impl AppState {
             local_id: Uuid::new_v4().to_string(),
             listen_addr: settings.listen_addr,
             target_addr: settings.target_addr,
-            relay_addr: settings.relay_addr,
             status: "Idle".to_owned(),
             server_running: false,
             outbound: None,
             session_nonce: 0,
-            session: None,
-            session_config: SessionConfig::default(),
-            delta_encoding: true,
-            target_fps: 15,
+            phase: ConnectionPhase::Idle,
+            bytes_sent: 0,
+            bytes_received: 0,
         }
     }
 
     pub fn snapshot(&self) -> AppSnapshot {
         AppSnapshot {
             connected: self.connected,
+            connecting: matches!(self.phase, ConnectionPhase::Connecting),
             peer_id: self.peer_id.clone(),
             current_frame: self.current_frame.clone(),
             current_frame_size: self.current_frame_size,
@@ -86,9 +96,9 @@ impl AppState {
             target_addr: self.target_addr.clone(),
             status: self.status.clone(),
             server_running: self.server_running,
-            session_state: self.session.as_ref().map(|s| format!("{:?}", s.state)),
-            bytes_sent: self.session.as_ref().map(|s| s.bytes_sent).unwrap_or(0),
-            bytes_received: self.session.as_ref().map(|s| s.bytes_received).unwrap_or(0),
+            connection_label: self.phase.label().to_owned(),
+            bytes_sent: self.bytes_sent,
+            bytes_received: self.bytes_received,
         }
     }
 
@@ -96,14 +106,14 @@ impl AppState {
         AppSettings {
             listen_addr: self.listen_addr.clone(),
             target_addr: self.target_addr.clone(),
-            relay_addr: self.relay_addr.clone(),
         }
     }
 
     pub fn begin_session(&mut self) -> u64 {
         self.session_nonce = self.session_nonce.wrapping_add(1);
-        let session_id = SessionId::new();
-        self.session = Some(SessionInfo::new(session_id));
+        self.phase = ConnectionPhase::Connecting;
+        self.bytes_sent = 0;
+        self.bytes_received = 0;
         self.session_nonce
     }
 
@@ -118,64 +128,25 @@ impl AppState {
         self.current_frame_size = None;
         self.frame_version = 0;
         self.outbound = None;
-        if let Some(ref mut session) = self.session {
-            session.disconnect();
-        }
+        self.phase = ConnectionPhase::Idle;
     }
 
     pub fn mark_session_failed(&mut self) {
-        if let Some(ref mut session) = self.session {
-            session.fail();
-        }
+        self.phase = ConnectionPhase::Failed;
     }
 
-    /// v2: Activate the session after successful connection.
     pub fn activate_session(&mut self, peer_id: String) {
         self.connected = true;
-        self.peer_id = Some(peer_id.clone());
-        if let Some(ref mut session) = self.session {
-            session.activate(peer_id);
-        }
+        self.peer_id = Some(peer_id);
+        self.phase = ConnectionPhase::Connected;
     }
 
-    /// v2: Record bytes sent for session tracking.
     pub fn record_bytes_sent(&mut self, bytes: usize) {
-        if let Some(ref mut session) = self.session {
-            session.record_send(bytes);
-        }
+        self.bytes_sent += bytes as u64;
     }
 
-    /// v2: Record bytes received for session tracking.
     pub fn record_bytes_received(&mut self, bytes: usize) {
-        if let Some(ref mut session) = self.session {
-            session.record_recv(bytes);
-        }
-    }
-
-    /// v2: Check if the session is stale and should be reconnected.
-    pub fn is_session_stale(&self) -> bool {
-        self.session
-            .as_ref()
-            .map(|s| s.is_stale(self.session_config.stale_timeout))
-            .unwrap_or(false)
-    }
-
-    /// v2: Attempt to reconnect if within retry limits.
-    pub fn should_reconnect(&self) -> bool {
-        self.session
-            .as_ref()
-            .map(|s| {
-                s.reconnect_attempts < self.session_config.max_reconnect_attempts
-                    && s.state != SessionState::Active
-            })
-            .unwrap_or(false)
-    }
-
-    /// v2: Record that a frame was sent for session stats.
-    pub fn record_frame(&mut self) {
-        if let Some(ref mut session) = self.session {
-            session.record_frame();
-        }
+        self.bytes_received += bytes as u64;
     }
 }
 
@@ -220,6 +191,7 @@ impl ConnectionManager {
             let _ = save_settings(&state.settings());
             let session_nonce = state.begin_session();
             state.clear_connection_state();
+            state.phase = ConnectionPhase::Connecting;
             state.status = format!("Connecting to {target_addr}");
             session_nonce
         } else {

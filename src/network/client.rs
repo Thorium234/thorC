@@ -28,7 +28,10 @@ fn apply_decoded_frame(
                     state.current_frame_size = Some((frame.width, frame.height));
                     state.frame_version = state.frame_version.wrapping_add(1);
                     state.record_bytes_received(data.len());
-                    let peer = state.peer_id.clone().unwrap_or_else(|| target_addr.to_owned());
+                    let peer = state
+                        .peer_id
+                        .clone()
+                        .unwrap_or_else(|| target_addr.to_owned());
                     state.activate_session(peer);
                     state.status = format!("Streaming from {target_addr}");
                 }
@@ -90,17 +93,22 @@ fn apply_delta_frame(
                 let dst_end = dst_start + rw * 4;
 
                 if dst_end <= current.len() && src_end <= region.data.len() {
-                    current[dst_start..dst_end]
-                        .copy_from_slice(&region.data[src_start..src_end]);
+                    current[dst_start..dst_end].copy_from_slice(&region.data[src_start..src_end]);
                 }
             }
         }
 
-        let peer = state.peer_id.clone().unwrap_or_else(|| target_addr.to_owned());
+        let peer = state
+            .peer_id
+            .clone()
+            .unwrap_or_else(|| target_addr.to_owned());
         state.current_frame = Some(current);
         state.current_frame_size = Some((width as usize, height as usize));
         state.frame_version = state.frame_version.wrapping_add(1);
-        let delta_bytes = regions.iter().map(|region| region.data.len()).sum::<usize>();
+        let delta_bytes = regions
+            .iter()
+            .map(|region| region.data.len())
+            .sum::<usize>();
         state.record_bytes_received(delta_bytes);
         state.activate_session(peer);
         state.status = format!("Streaming from {target_addr}");
@@ -145,30 +153,18 @@ pub async fn connect_to_peer(
         state.local_id.clone()
     };
 
-    // v2: Send session ID if we have one
-    let session_id = {
-        let state = state
-            .lock()
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "state lock poisoned"))?;
-        state.session.as_ref().map(|s| s.id.as_str().to_owned())
-    };
-
     outbound_tx
-        .send(Message::ConnectRequest {
-            id: local_id,
-            session_id,
-        })
+        .send(Message::ConnectRequest { id: local_id })
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "failed to send handshake"))?;
     let mut pending_frame: Option<PendingFrame> = None;
 
     loop {
         match read_message(&mut reader).await {
-            Ok(Message::ConnectAccept { session_id }) => {
+            Ok(Message::ConnectAccept) => {
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {
                         state.connected = true;
-                        state.status =
-                            format!("Connected to {target_addr} (session {session_id})");
+                        state.status = format!("Connected to {target_addr}");
                     }
                 }
             }
@@ -234,10 +230,9 @@ pub async fn connect_to_peer(
                 frame.data.extend_from_slice(&data);
 
                 if frame.data.len() == frame.total_len {
-                    let complete_frame = mem::take(&mut pending_frame)
-                        .ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::InvalidData, "missing pending frame")
-                        })?;
+                    let complete_frame = mem::take(&mut pending_frame).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "missing pending frame")
+                    })?;
                     apply_decoded_frame(&state, session_nonce, &target_addr, &complete_frame.data);
                 }
             }
@@ -250,21 +245,10 @@ pub async fn connect_to_peer(
                 }
                 return Ok(());
             }
-            Ok(Message::Heartbeat) => {
-                // v2: Respond to heartbeat to keep connection alive
-                if let Ok(state) = state.lock() {
-                    if state.is_current_session(session_nonce) {
-                        if let Some(sender) = state.outbound.clone() {
-                            let _ = sender.send(Message::Heartbeat);
-                        }
-                    }
-                }
-            }
             Ok(Message::ConnectRequest { .. })
             | Ok(Message::MouseEvent { .. })
             | Ok(Message::MouseScroll { .. })
-            | Ok(Message::KeyboardEvent { .. })
-            | Ok(Message::ReconnectRequest { .. }) => {}
+            | Ok(Message::KeyboardEvent { .. }) => {}
             Err(err) => {
                 if let Ok(mut state) = state.lock() {
                     if state.is_current_session(session_nonce) {

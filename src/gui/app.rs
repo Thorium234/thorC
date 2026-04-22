@@ -132,6 +132,8 @@ impl ThorApp {
     fn status_tone(snapshot: &AppSnapshot) -> (Color32, &'static str) {
         if snapshot.connected {
             (Color32::from_rgb(74, 222, 128), "Live session")
+        } else if snapshot.connecting {
+            (Color32::from_rgb(96, 165, 250), "Connecting")
         } else if snapshot.server_running {
             (Color32::from_rgb(250, 204, 21), "Waiting for peer")
         } else {
@@ -249,14 +251,6 @@ impl ThorApp {
                         .size(14.0)
                         .color(Color32::from_rgb(157, 168, 182)),
                 );
-                if let Some(session_state) = snapshot.session_state.as_deref() {
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(format!("State: {session_state}"))
-                            .size(13.0)
-                            .color(Color32::from_rgb(210, 215, 222)),
-                    );
-                }
                 if let Some(peer_id) = snapshot.peer_id.as_deref() {
                     ui.add_space(8.0);
                     ui.label(
@@ -267,9 +261,16 @@ impl ThorApp {
                 }
                 ui.add_space(8.0);
                 ui.label(
+                    RichText::new(format!("Mode: {}", snapshot.connection_label))
+                        .size(13.0)
+                        .color(Color32::from_rgb(210, 215, 222)),
+                );
+                ui.add_space(8.0);
+                ui.label(
                     RichText::new(format!(
-                        "Traffic: {} B sent, {} B received",
-                        snapshot.bytes_sent, snapshot.bytes_received
+                        "Traffic: {} sent, {} received",
+                        format_bytes(snapshot.bytes_sent),
+                        format_bytes(snapshot.bytes_received)
                     ))
                     .size(13.0)
                     .color(Color32::from_rgb(210, 215, 222)),
@@ -339,11 +340,13 @@ impl ThorApp {
                         .min_size(Vec2::new(button_width, 34.0));
                     if ui
                         .add_enabled(
-                            Self::is_address_ready(&self.connect_addr) && !snapshot.connected,
+                            Self::is_address_ready(&self.connect_addr)
+                                && !snapshot.connected
+                                && !snapshot.connecting,
                             connect,
                         )
                         .on_disabled_hover_text(
-                            "Enter a target like 127.0.0.1:9000 or disconnect first",
+                            "Enter a target like 127.0.0.1:9000, or wait for the current connection attempt to finish",
                         )
                         .clicked()
                     {
@@ -369,6 +372,8 @@ impl ThorApp {
     fn draw_viewer_hint(&self, ui: &mut egui::Ui, snapshot: &AppSnapshot) {
         let hint = if snapshot.connected && snapshot.current_frame.is_none() {
             "Connected. Waiting for the first screen frame from the remote machine."
+        } else if snapshot.connecting {
+            "Connecting to the remote machine."
         } else if snapshot.connected {
             "Connected. Click inside the frame to send input."
         } else if snapshot.server_running {
@@ -589,6 +594,19 @@ fn map_key(key: egui::Key) -> Option<&'static str> {
         egui::Key::Escape => Some("escape"),
         egui::Key::Space => Some("space"),
         _ => None,
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * 1024;
+
+    if bytes >= MIB {
+        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+    } else if bytes >= KIB {
+        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+    } else {
+        format!("{bytes} B")
     }
 }
 
