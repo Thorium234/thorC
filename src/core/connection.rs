@@ -1,9 +1,12 @@
+use std::fs::File;
+use std::io::Read;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 
-use crate::core::protocol::Message;
+use crate::core::protocol::{Message, FILE_CHUNK_SIZE, MAX_FILE_SIZE};
 use crate::core::settings::{load_settings, save_settings, AppSettings};
 use crate::network::{client, server};
 
@@ -223,6 +226,33 @@ impl ConnectionManager {
         }
     }
 
+    pub fn send_file(&self, path: PathBuf) {
+        let (outbound, session_nonce) = match self.state.lock() {
+            Ok(mut state) => {
+                let Some(sender) = state.outbound.clone() else {
+                    state.status = "Connect to a remote machine before sending files".to_owned();
+                    return;
+                };
+                let session_nonce = state.session_nonce;
+                state.status = format!("Preparing file transfer: {}", path.display());
+                (sender, session_nonce)
+            }
+            Err(_) => return,
+        };
+
+        let state = self.state.clone();
+        self.runtime.spawn_blocking(move || {
+            let result = stream_file(path, outbound);
+            if let Ok(mut state) = state.lock() {
+                if state.is_current_session(session_nonce) {
+                    if let Err(err) = result {
+                        state.status = format!("File transfer failed: {err}");
+                    }
+                }
+            }
+        });
+    }
+
     pub fn disconnect(&self) {
         self.send_message(Message::Disconnect);
         if let Ok(mut state) = self.state.lock() {
@@ -239,4 +269,63 @@ impl ConnectionManager {
             let _ = save_settings(&state.settings());
         }
     }
+}
+
+fn stream_file(path: PathBuf, sender: mpsc::UnboundedSender<Message>) -> std::io::Result<()> {
+    let metadata = std::fs::metadata(&path)?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "only files can be transferred",
+        ));
+    }
+
+    let size = metadata.len();
+    if size == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty files are not supported",
+        ));
+    }
+    if size > MAX_FILE_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("file exceeds {} MiB limit", MAX_FILE_SIZE / (1024 * 1024)),
+        ));
+    }
+
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "file name is not valid UTF-8")
+        })?
+        .to_owned();
+
+    sender
+        .send(Message::FileStart { name, size })
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed"))?;
+
+    let mut file = File::open(&path)?;
+    let mut buffer = vec![0_u8; FILE_CHUNK_SIZE];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+
+        sender
+            .send(Message::FileChunk {
+                data: buffer[..read].to_vec(),
+            })
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed")
+            })?;
+    }
+
+    sender
+        .send(Message::FileEnd)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed"))?;
+    Ok(())
 }

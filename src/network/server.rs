@@ -1,4 +1,6 @@
-use std::io;
+use std::fs::File;
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -7,7 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::core::connection::AppState;
 use crate::core::protocol::{
-    read_message, write_message, Message, FRAME_CHUNK_SIZE, MAX_FRAME_SIZE,
+    read_message, write_message, Message, FRAME_CHUNK_SIZE, MAX_FILE_SIZE, MAX_FRAME_SIZE,
 };
 use crate::input::keyboard::execute_keyboard_event;
 use crate::input::mouse::{execute_mouse_event, execute_mouse_scroll};
@@ -16,6 +18,12 @@ use crate::screen::delta::DeltaEncoder;
 use crate::screen::encode::encode_frame;
 
 const TARGET_FPS: u64 = 15;
+
+struct PendingFile {
+    name: String,
+    size: u64,
+    data: Vec<u8>,
+}
 
 pub async fn run_server(state: Arc<Mutex<AppState>>, listen_addr: String) -> io::Result<()> {
     let listener = TcpListener::bind(&listen_addr).await?;
@@ -88,6 +96,7 @@ async fn handle_client(
     });
 
     let mut frame_task_started = false;
+    let mut pending_file: Option<PendingFile> = None;
 
     loop {
         match read_message(&mut reader).await {
@@ -137,6 +146,105 @@ async fn handle_client(
                         if state.is_current_session(session_nonce) {
                             state.status = format!("Keyboard input failed: {err}");
                         }
+                    }
+                }
+            }
+            Ok(Message::FileStart { name, size }) => {
+                if size > MAX_FILE_SIZE {
+                    outbound_tx.send(Message::FileReject {
+                        reason: format!("File exceeds {} MiB limit", MAX_FILE_SIZE / (1024 * 1024)),
+                    }).ok();
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.status = "File rejected: too large".to_owned();
+                        }
+                    }
+                    continue;
+                }
+                pending_file = Some(PendingFile {
+                    name,
+                    size,
+                    data: Vec::with_capacity(size as usize),
+                });
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status = "Receiving file...".to_owned();
+                    }
+                }
+            }
+            Ok(Message::FileChunk { data }) => {
+                let Some(file) = pending_file.as_mut() else {
+                    continue;
+                };
+                if file.data.len() + data.len() > file.size as usize {
+                    pending_file = None;
+                    outbound_tx.send(Message::FileReject {
+                        reason: "File exceeds declared size".to_owned(),
+                    }).ok();
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.status = "File transfer rejected: oversized".to_owned();
+                        }
+                    }
+                    continue;
+                }
+                file.data.extend_from_slice(&data);
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        let progress = (file.data.len() as f64 / file.size as f64 * 100.0) as u32;
+                        state.status = format!("Receiving file... {}%", progress);
+                    }
+                }
+            }
+            Ok(Message::FileEnd) => {
+                if let Some(file) = pending_file.take() {
+                    let final_path = PathBuf::from(&file.name);
+                    let mut final_file = match File::create(&final_path) {
+                        Ok(f) => f,
+                        Err(err) => {
+                            outbound_tx.send(Message::FileReject {
+                                reason: format!("Cannot create file: {}", err),
+                            }).ok();
+                            if let Ok(mut state) = state.lock() {
+                                if state.is_current_session(session_nonce) {
+                                    state.status = format!("Failed to save file: {}", err);
+                                }
+                            }
+                            continue;
+                        }
+                    };
+                    if let Err(err) = final_file.write_all(&file.data) {
+                        outbound_tx.send(Message::FileReject {
+                            reason: format!("Cannot write file: {}", err),
+                        }).ok();
+                        if let Ok(mut state) = state.lock() {
+                            if state.is_current_session(session_nonce) {
+                                state.status = format!("Failed to save file: {}", err);
+                            }
+                        }
+                        continue;
+                    }
+                    outbound_tx.send(Message::FileSaved {
+                        path: file.name.clone(),
+                    }).ok();
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.status = format!("File saved: {}", file.name);
+                        }
+                    }
+                }
+            }
+            Ok(Message::FileSaved { path }) => {
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status = format!("File sent successfully: {}", path);
+                    }
+                }
+            }
+            Ok(Message::FileReject { reason }) => {
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status = format!("File transfer rejected: {}", reason);
                     }
                 }
             }

@@ -1,5 +1,7 @@
-use std::io;
+use std::fs::File;
+use std::io::{self, Write};
 use std::mem;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tokio::net::TcpStream;
@@ -12,6 +14,13 @@ use crate::screen::decode::decode_frame;
 struct PendingFrame {
     total_len: usize,
     data: Vec<u8>,
+}
+
+struct PendingFile {
+    name: String,
+    size: u64,
+    data: Vec<u8>,
+    temp_path: PathBuf,
 }
 
 fn apply_decoded_frame(
@@ -142,6 +151,7 @@ pub async fn connect_to_peer(
         .send(Message::ConnectRequest)
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "failed to send handshake"))?;
     let mut pending_frame: Option<PendingFrame> = None;
+    let mut pending_file: Option<PendingFile> = None;
 
     loop {
         match read_message(&mut reader).await {
@@ -219,6 +229,98 @@ pub async fn connect_to_peer(
                         io::Error::new(io::ErrorKind::InvalidData, "missing pending frame")
                     })?;
                     apply_decoded_frame(&state, session_nonce, &target_addr, &complete_frame.data);
+                }
+            }
+            Ok(Message::FileStart { name, size }) => {
+                let temp_path = std::env::temp_dir().join(format!("thorc_recv_{}", name));
+                pending_file = Some(PendingFile {
+                    name,
+                    size,
+                    data: Vec::with_capacity(size as usize),
+                    temp_path,
+                });
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status = "Receiving file...".to_owned();
+                    }
+                }
+            }
+            Ok(Message::FileChunk { data }) => {
+                let Some(file) = pending_file.as_mut() else {
+                    continue;
+                };
+                if file.data.len() + data.len() > file.size as usize {
+                    pending_file = None;
+                    outbound_tx.send(Message::FileReject {
+                        reason: "File exceeds declared size".to_owned(),
+                    }).ok();
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.status = "File transfer rejected: oversized".to_owned();
+                        }
+                    }
+                    continue;
+                }
+                file.data.extend_from_slice(&data);
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        let progress = (file.data.len() as f64 / file.size as f64 * 100.0) as u32;
+                        state.status = format!("Receiving file... {}%", progress);
+                    }
+                }
+            }
+            Ok(Message::FileEnd) => {
+                if let Some(file) = pending_file.take() {
+                    let final_path = PathBuf::from(&file.name);
+                    let mut final_file = match File::create(&final_path) {
+                        Ok(f) => f,
+                        Err(err) => {
+                            outbound_tx.send(Message::FileReject {
+                                reason: format!("Cannot create file: {}", err),
+                            }).ok();
+                            if let Ok(mut state) = state.lock() {
+                                if state.is_current_session(session_nonce) {
+                                    state.status = format!("Failed to save file: {}", err);
+                                }
+                            }
+                            continue;
+                        }
+                    };
+                    if let Err(err) = final_file.write_all(&file.data) {
+                        outbound_tx.send(Message::FileReject {
+                            reason: format!("Cannot write file: {}", err),
+                        }).ok();
+                        if let Ok(mut state) = state.lock() {
+                            if state.is_current_session(session_nonce) {
+                                state.status = format!("Failed to save file: {}", err);
+                            }
+                        }
+                        continue;
+                    }
+                    // Clean up temp file if it exists
+                    let _ = std::fs::remove_file(&file.temp_path);
+                    outbound_tx.send(Message::FileSaved {
+                        path: file.name.clone(),
+                    }).ok();
+                    if let Ok(mut state) = state.lock() {
+                        if state.is_current_session(session_nonce) {
+                            state.status = format!("File saved: {}", file.name);
+                        }
+                    }
+                }
+            }
+            Ok(Message::FileSaved { path }) => {
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status = format!("File sent successfully: {}", path);
+                    }
+                }
+            }
+            Ok(Message::FileReject { reason }) => {
+                if let Ok(mut state) = state.lock() {
+                    if state.is_current_session(session_nonce) {
+                        state.status = format!("File transfer rejected: {}", reason);
+                    }
                 }
             }
             Ok(Message::Disconnect) => {

@@ -357,6 +357,25 @@ impl ThorApp {
                         self.set_notice("Disconnected session");
                     }
                 });
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    let send_file = egui::Button::new(RichText::new("Send File").strong())
+                        .min_size(Vec2::new(ui.available_width(), 34.0));
+                    if ui
+                        .add_enabled(snapshot.connected, send_file)
+                        .on_disabled_hover_text("Connect to a machine to send files")
+                        .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .pick_file()
+                        {
+                            self.manager.send_file(path);
+                            self.set_notice(format!("Sending file: {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                        }
+                    }
+                });
             });
         });
     }

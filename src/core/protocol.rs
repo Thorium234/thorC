@@ -6,6 +6,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 pub const MAX_FRAME_SIZE: usize = 128 * 1024 * 1024;
 pub const FRAME_CHUNK_SIZE: usize = 1024 * 1024;
+pub const FILE_CHUNK_SIZE: usize = 64 * 1024;
+pub const MAX_FILE_SIZE: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Message {
@@ -41,6 +43,20 @@ pub enum Message {
     },
     KeyboardEvent {
         key: String,
+    },
+    FileStart {
+        name: String,
+        size: u64,
+    },
+    FileChunk {
+        data: Vec<u8>,
+    },
+    FileEnd,
+    FileSaved {
+        path: String,
+    },
+    FileReject {
+        reason: String,
     },
     Disconnect,
 }
